@@ -112,7 +112,7 @@ public class Program
 
         // Initialize agent
         var conversation = new ConversationManager();
-        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings);
+        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox);
 
         // Initialize CLI
         var commands = new CommandHandler(browser, conversation, allowlist, sandbox);

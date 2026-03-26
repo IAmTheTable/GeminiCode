@@ -57,6 +57,10 @@ public static class ToolCallParser
         @"\[LIST\](.*?)\[/LIST\]",
         RegexOptions.Singleline | RegexOptions.Compiled);
 
+    private static readonly Regex SearchTagPattern = new(
+        @"\[SEARCH\](.*?)\[/SEARCH\]",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -88,6 +92,13 @@ public static class ToolCallParser
         {
             var pattern = m.Groups[1].Value.Trim();
             toolCalls.Add(MakeToolCall("ListFiles", new() { ["pattern"] = pattern }));
+            return "";
+        });
+
+        textContent = SearchTagPattern.Replace(textContent, m =>
+        {
+            var pattern = m.Groups[1].Value.Trim();
+            toolCalls.Add(MakeToolCall("SearchFiles", new() { ["pattern"] = pattern }));
             return "";
         });
 

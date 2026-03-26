@@ -15,6 +15,7 @@ public class AgentOrchestrator
     private readonly PermissionGate _permissionGate;
     private readonly ConversationManager _conversation;
     private readonly AppSettings _settings;
+    private readonly Tools.PathSandbox _sandbox;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -25,13 +26,15 @@ public class AgentOrchestrator
         ToolRegistry tools,
         PermissionGate permissionGate,
         ConversationManager conversation,
-        AppSettings settings)
+        AppSettings settings,
+        Tools.PathSandbox sandbox)
     {
         _browser = browser;
         _tools = tools;
         _permissionGate = permissionGate;
         _conversation = conversation;
         _settings = settings;
+        _sandbox = sandbox;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -41,7 +44,7 @@ public class AgentOrchestrator
             return true;
 
         Console.WriteLine($"{AnsiHelper.Dim}Initializing agent session...{AnsiHelper.Reset}");
-        await _browser.SendMessageAsync(SystemPrompt.Template);
+        await _browser.SendMessageAsync(SystemPrompt.GenerateTemplate(_sandbox.WorkingDirectory));
         _conversation.MarkSystemPromptSent();
 
         var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct);
