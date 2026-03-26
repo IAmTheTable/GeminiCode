@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GeminiCode.Tests/GeminiCode.Tests.csproj" />
+    <Project Path="src/GeminiCode/GeminiCode.csproj" />
+  </Folder>
+</Solution>
