@@ -92,16 +92,40 @@ public class AgentOrchestrator
             Console.Write(rendered);
         }
 
-        // If Gemini used <tool_call> format — execute them
+        // If text contained tool calls — execute them
         if (parsed.ToolCalls.Count > 0)
         {
             return await ExecuteToolCallsAsync(parsed.ToolCalls, ct);
         }
 
+        // Also scan code blocks for tool call patterns (Gemini often puts write_file() in code blocks)
+        var toolCallsFromBlocks = new List<ParsedToolCall>();
+        var regularBlocks = new List<CodeBlock>();
+
+        foreach (var block in response.CodeBlocks)
+        {
+            var blockParsed = ToolCallParser.Parse(block.Code);
+            if (blockParsed.ToolCalls.Count > 0)
+            {
+                toolCallsFromBlocks.AddRange(blockParsed.ToolCalls);
+            }
+            else
+            {
+                regularBlocks.Add(block);
+            }
+        }
+
+        // Execute any tool calls found in code blocks
+        if (toolCallsFromBlocks.Count > 0)
+        {
+            Console.WriteLine($"\n{AnsiHelper.Cyan}Detected {toolCallsFromBlocks.Count} tool call(s) from Gemini.{AnsiHelper.Reset}");
+            return await ExecuteToolCallsAsync(toolCallsFromBlocks, ct);
+        }
+
         // Filter to only NEW code blocks (not seen before)
-        var newBlocks = response.CodeBlocks
+        var newBlocks = regularBlocks
             .Where(b => !_seenCodeBlocks.Contains(b.Code[..Math.Min(b.Code.Length, 80)]))
-            .Where(b => b.Code.Split('\n').Length >= 3) // Skip tiny snippets like "python script.py"
+            .Where(b => b.Code.Split('\n').Length >= 3)
             .ToList();
 
         // Mark them as seen

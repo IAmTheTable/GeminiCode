@@ -23,18 +23,21 @@ public static class ToolCallParser
     private static readonly string[] KnownTools = ["write_file", "read_file", "edit_file", "list_files", "search_files", "run_command"];
 
     private static readonly Regex FuncCallPattern = new(
-        @"(?:^|\n)\s*(write_file|read_file|edit_file|list_files|search_files|run_command)\s*\((.*?)\)(?:\s*$|\s*\n)",
+        @"(?:^|\n)\s*(write_file|read_file|edit_file|list_files|search_files|run_command|execute_shell|execute_command|save_file)\s*\((.*?)\)\s*(?:$|\n)",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.Multiline);
 
-    // Map function names to our tool names
+    // Map function names (including common aliases Gemini uses) to our tool names
     private static readonly Dictionary<string, string> FuncToToolName = new(StringComparer.OrdinalIgnoreCase)
     {
         ["write_file"] = "WriteFile",
+        ["save_file"] = "WriteFile",
         ["read_file"] = "ReadFile",
         ["edit_file"] = "EditFile",
         ["list_files"] = "ListFiles",
         ["search_files"] = "SearchFiles",
         ["run_command"] = "RunCommand",
+        ["execute_shell"] = "RunCommand",
+        ["execute_command"] = "RunCommand",
     };
 
     public static ParseResult Parse(string responseText)
