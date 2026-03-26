@@ -4,7 +4,7 @@ namespace GeminiCode.Cli;
 
 public static class AnsiHelper
 {
-    public static bool Enabled { get; private set; }
+    public static bool Enabled { get; set; }
 
     public static string Reset => Enabled ? "\x1b[0m" : "";
     public static string Bold => Enabled ? "\x1b[1m" : "";

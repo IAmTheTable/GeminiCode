@@ -4,6 +4,11 @@ namespace GeminiCode.Tests;
 
 public class MarkdownRendererTests
 {
+    public MarkdownRendererTests()
+    {
+        AnsiHelper.Enabled = true;
+    }
+
     [Fact]
     public void RenderCodeBlock_WrapsWithAnsiColors()
     {

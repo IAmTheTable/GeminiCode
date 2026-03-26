@@ -40,27 +40,77 @@ public static class ToolCallParser
         ["execute_command"] = "RunCommand",
     };
 
+    // Tag-based patterns: [FILE:name]...[/FILE], [RUN]...[/RUN], [READ]...[/READ], [LIST]...[/LIST]
+    private static readonly Regex FileTagPattern = new(
+        @"\[FILE:([^\]]+)\]\s*\n([\s\S]*?)\n\s*\[/FILE\]",
+        RegexOptions.Compiled);
+
+    private static readonly Regex RunTagPattern = new(
+        @"\[RUN\](.*?)\[/RUN\]",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex ReadTagPattern = new(
+        @"\[READ\](.*?)\[/READ\]",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex ListTagPattern = new(
+        @"\[LIST\](.*?)\[/LIST\]",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
 
-        // Strategy 1: XML <tool_call> format
-        var unwrapped = FencePattern.Replace(responseText, m =>
+        // Strategy 1 (PRIMARY): Tag-based format [FILE:name]...[/FILE], [RUN]...[/RUN]
+        var textContent = FileTagPattern.Replace(responseText, m =>
         {
-            var inner = m.Groups[1].Value;
-            return inner.Contains("<tool_call>") ? inner : m.Value;
-        });
-
-        var textContent = ToolCallPattern.Replace(unwrapped, m =>
-        {
-            var json = m.Groups[1].Value.Trim();
-            var parsed = TryParseXmlToolCall(json);
-            if (parsed != null)
-                toolCalls.Add(parsed);
+            var path = m.Groups[1].Value.Trim();
+            var content = m.Groups[2].Value;
+            toolCalls.Add(MakeToolCall("WriteFile", new() { ["path"] = path, ["content"] = content }));
             return "";
         });
 
-        // Strategy 2: Function-call format write_file(path="...", content="...")
+        textContent = RunTagPattern.Replace(textContent, m =>
+        {
+            var command = m.Groups[1].Value.Trim();
+            toolCalls.Add(MakeToolCall("RunCommand", new() { ["command"] = command }));
+            return "";
+        });
+
+        textContent = ReadTagPattern.Replace(textContent, m =>
+        {
+            var path = m.Groups[1].Value.Trim();
+            toolCalls.Add(MakeToolCall("ReadFile", new() { ["path"] = path }));
+            return "";
+        });
+
+        textContent = ListTagPattern.Replace(textContent, m =>
+        {
+            var pattern = m.Groups[1].Value.Trim();
+            toolCalls.Add(MakeToolCall("ListFiles", new() { ["pattern"] = pattern }));
+            return "";
+        });
+
+        // Strategy 2: XML <tool_call> format
+        if (toolCalls.Count == 0)
+        {
+            var unwrapped = FencePattern.Replace(textContent, m =>
+            {
+                var inner = m.Groups[1].Value;
+                return inner.Contains("<tool_call>") ? inner : m.Value;
+            });
+
+            textContent = ToolCallPattern.Replace(unwrapped, m =>
+            {
+                var json = m.Groups[1].Value.Trim();
+                var parsed = TryParseXmlToolCall(json);
+                if (parsed != null)
+                    toolCalls.Add(parsed);
+                return "";
+            });
+        }
+
+        // Strategy 3: Function-call format write_file(path="...", content="...")
         if (toolCalls.Count == 0)
         {
             textContent = FuncCallPattern.Replace(textContent, m =>
@@ -77,7 +127,7 @@ public static class ToolCallParser
             });
         }
 
-        // Strategy 3: JSON action format {"action": "execute_shell", "command": "..."}
+        // Strategy 4: JSON action format {"action": "execute_shell", "command": "..."}
         if (toolCalls.Count == 0)
         {
             var jsonParsed = TryParseJsonAction(textContent);
@@ -91,6 +141,18 @@ public static class ToolCallParser
         textContent = Regex.Replace(textContent.Trim(), @"\n{3,}", "\n\n");
 
         return new ParseResult(toolCalls, textContent);
+    }
+
+    /// <summary>Helper to create a ParsedToolCall from string parameters.</summary>
+    private static ParsedToolCall MakeToolCall(string name, Dictionary<string, string> stringParams)
+    {
+        var jsonParams = new Dictionary<string, JsonElement>();
+        foreach (var kv in stringParams)
+        {
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(kv.Value));
+            jsonParams[kv.Key] = doc.RootElement.Clone();
+        }
+        return new ParsedToolCall(name, jsonParams);
     }
 
     private static ParsedToolCall? TryParseXmlToolCall(string json)
