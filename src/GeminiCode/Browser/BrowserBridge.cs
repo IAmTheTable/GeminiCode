@@ -217,12 +217,44 @@ public class BrowserBridge : IDisposable
 
     public async Task<GeminiResponse?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct)
     {
-        // Simple, robust poll: grab ALL text from the entire conversation area,
-        // then take everything after the last user message as the model response.
-        // This avoids fragile CSS selector matching for specific response containers.
-        var pollScript = """
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        // Step 1: Capture baseline BEFORE response arrives (text length + pre count)
+        var baselineScript = """
             (function() {
-                // Grab the full conversation text from the main content area
+                var main = document.querySelector('[class*="chat-container"]')
+                    || document.querySelector('.content-container')
+                    || document.querySelector('.main-content');
+                if (!main) return JSON.stringify({textLen: 0, preCount: 0});
+                var textLen = (main.innerText || '').length;
+                var preCount = main.querySelectorAll('pre').length;
+                return JSON.stringify({textLen: textLen, preCount: preCount});
+            })()
+            """;
+
+        int baselineTextLen = 0;
+        int baselinePreCount = 0;
+        try
+        {
+            var baseResult = await InvokeOnStaAsync(() =>
+                _window!.WebView.CoreWebView2.ExecuteScriptAsync(baselineScript));
+            var baseUnescaped = JsonSerializer.Deserialize<string>(baseResult);
+            if (baseUnescaped != null)
+            {
+                using var baseDoc = JsonDocument.Parse(baseUnescaped);
+                baselineTextLen = baseDoc.RootElement.GetProperty("textLen").GetInt32();
+                baselinePreCount = baseDoc.RootElement.GetProperty("preCount").GetInt32();
+            }
+        }
+        catch { }
+
+        // Step 2: Build poll script that uses baseline to extract only NEW content
+        var pollScript = $$"""
+            (function() {
+                var baseTextLen = {{baselineTextLen}};
+                var basePreCount = {{baselinePreCount}};
+
                 var main = document.querySelector('[class*="chat-container"]')
                     || document.querySelector('.content-container')
                     || document.querySelector('.main-content');
@@ -230,9 +262,15 @@ public class BrowserBridge : IDisposable
 
                 var fullText = main.innerText || '';
 
-                // Extract code blocks from pre/code elements in the conversation
-                var allCodeBlocks = [];
-                main.querySelectorAll('pre').forEach(function(el) {
+                // Only return NEW text (after baseline)
+                var newText = fullText.length > baseTextLen ? fullText.substring(baseTextLen).trim() : '';
+                if (!newText || newText.length < 5) return JSON.stringify({done: false, reason: 'no_new_text'});
+
+                // Only extract NEW code blocks (after baseline pre count)
+                var allPres = main.querySelectorAll('pre');
+                var newCodeBlocks = [];
+                for (var i = basePreCount; i < allPres.length; i++) {
+                    var el = allPres[i];
                     var code = el.innerText || el.textContent || '';
                     if (code.trim().length > 20) {
                         var lang = '';
@@ -243,40 +281,13 @@ public class BrowserBridge : IDisposable
                         if (!lang && code.includes('import ') && (code.includes('def ') || code.includes('print('))) lang = 'python';
                         if (!lang && (code.includes('function ') || code.includes('const ') || code.includes('=>'))) lang = 'javascript';
                         if (!lang && code.includes('using ') && code.includes('namespace ')) lang = 'csharp';
-                        allCodeBlocks.push({language: lang, code: code.trim()});
+                        newCodeBlocks.push({language: lang, code: code.trim()});
                     }
-                });
-                // Deduplicate
-                var seen = {};
-                allCodeBlocks = allCodeBlocks.filter(function(b) {
-                    var key = b.code.substring(0, 80);
-                    if (seen[key]) return false;
-                    seen[key] = true;
-                    return true;
-                });
+                }
 
-                return JSON.stringify({done: true, text: fullText, codeBlocks: allCodeBlocks});
+                return JSON.stringify({done: true, text: newText, codeBlocks: newCodeBlocks});
             })()
             """;
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
-        // Capture the conversation text BEFORE the response arrives
-        string? baselineText = null;
-        try
-        {
-            var baseResult = await InvokeOnStaAsync(() =>
-                _window!.WebView.CoreWebView2.ExecuteScriptAsync(pollScript));
-            var baseUnescaped = JsonSerializer.Deserialize<string>(baseResult);
-            if (baseUnescaped != null)
-            {
-                using var baseDoc = JsonDocument.Parse(baseUnescaped);
-                if (baseDoc.RootElement.GetProperty("done").GetBoolean())
-                    baselineText = baseDoc.RootElement.GetProperty("text").GetString();
-            }
-        }
-        catch { }
 
         // Wait for Gemini to start processing
         await Task.Delay(3000, cts.Token);
@@ -297,21 +308,7 @@ public class BrowserBridge : IDisposable
                     using var doc = JsonDocument.Parse(unescaped);
                     if (doc.RootElement.GetProperty("done").GetBoolean())
                     {
-                        var fullText = doc.RootElement.GetProperty("text").GetString() ?? "";
-
-                        // Extract only the NEW text (after baseline)
-                        var responseText = fullText;
-                        if (baselineText != null && fullText.Length > baselineText.Length)
-                        {
-                            responseText = fullText[baselineText.Length..].Trim();
-                        }
-
-                        // Skip if no new content yet
-                        if (string.IsNullOrWhiteSpace(responseText) || responseText.Length < 5)
-                        {
-                            await Task.Delay(1000, cts.Token);
-                            continue;
-                        }
+                        var responseText = doc.RootElement.GetProperty("text").GetString() ?? "";
 
                         // Wait for text to stabilize (2 consecutive identical polls = done)
                         if (responseText == lastText)
