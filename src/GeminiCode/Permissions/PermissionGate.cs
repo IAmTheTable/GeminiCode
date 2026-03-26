@@ -1,3 +1,4 @@
+// src/GeminiCode/Permissions/PermissionGate.cs
 using GeminiCode.Cli;
 using GeminiCode.Tools;
 
@@ -22,9 +23,11 @@ public class PermissionGate
 
     public PermissionResult RequestPermission(ITool tool, Dictionary<string, System.Text.Json.JsonElement> parameters)
     {
+        // Check allowlist first
         if (_allowlist.IsAllowed(tool.Name))
             return PermissionResult.Approved;
 
+        // Display permission request
         var riskLabel = RiskAssessor.GetRiskLabel(tool);
         var description = tool.DescribeAction(parameters);
 

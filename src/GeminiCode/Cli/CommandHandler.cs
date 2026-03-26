@@ -62,6 +62,9 @@ public class CommandHandler
             case "/cd":
                 HandleCd(arg);
                 return true;
+            case "/model":
+                await HandleModelAsync(arg);
+                return true;
             case "/paste":
                 Console.WriteLine("Paste mode: enter text, then type END on a new line to finish.");
                 return true;
@@ -78,15 +81,16 @@ public class CommandHandler
     {
         Console.WriteLine($"""
             {AnsiHelper.Bold}Available commands:{AnsiHelper.Reset}
-              /help       — Show this help
-              /clear      — Clear terminal
-              /new        — Start a new Gemini conversation
-              /browser    — Bring browser window to foreground
-              /history    — Show conversation turn count
-              /allowlist  — Show current session allowlist
-              /status     — Show session state
-              /cd <path>  — Change working directory
-              /exit       — Quit GeminiCode
+              /help            — Show this help
+              /clear           — Clear terminal
+              /new             — Start a new Gemini conversation
+              /model <name>    — Switch Gemini mode (flash/pro/thinking)
+              /browser         — Bring browser window to foreground
+              /history         — Show conversation turn count
+              /allowlist       — Show current session allowlist
+              /status          — Show session state
+              /cd <path>       — Change working directory
+              /exit            — Quit GeminiCode
             """);
     }
 
@@ -113,13 +117,54 @@ public class CommandHandler
     private async Task PrintStatusAsync()
     {
         var authCheck = await _browser.CheckAuthenticatedAsync();
+        var model = await _browser.GetCurrentModelAsync();
         Console.WriteLine($"""
             {AnsiHelper.Bold}Status:{AnsiHelper.Reset}
               Auth:       {(authCheck ? $"{AnsiHelper.Green}Authenticated{AnsiHelper.Reset}" : $"{AnsiHelper.Red}Not authenticated{AnsiHelper.Reset}")}
+              Model:      {AnsiHelper.Bold}{model}{AnsiHelper.Reset}
               Work dir:   {_sandbox.WorkingDirectory}
               Turns:      {_conversation.TurnCount}
               Allowlist:  {_allowlist.GetEntries().Count} tools auto-approved
             """);
+    }
+
+    private async Task HandleModelAsync(string? modeName)
+    {
+        if (string.IsNullOrWhiteSpace(modeName))
+        {
+            var current = await _browser.GetCurrentModelAsync();
+            Console.WriteLine($"Current model: {AnsiHelper.Bold}{current}{AnsiHelper.Reset}");
+            Console.WriteLine("Usage: /model <flash|pro|thinking>");
+            return;
+        }
+
+        Console.WriteLine($"Switching to {modeName}...");
+        var result = await _browser.SwitchModelAsync(modeName);
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(result);
+            if (doc.RootElement.GetProperty("success").GetBoolean())
+            {
+                var selected = doc.RootElement.GetProperty("selected").GetString();
+                Console.WriteLine($"{AnsiHelper.Green}Switched to: {selected}{AnsiHelper.Reset}");
+                // Start new conversation with the new model
+                await HandleNewChatAsync();
+            }
+            else
+            {
+                var available = doc.RootElement.GetProperty("available");
+                Console.WriteLine($"{AnsiHelper.Red}Mode '{modeName}' not found.{AnsiHelper.Reset}");
+                Console.Write("Available: ");
+                foreach (var item in available.EnumerateArray())
+                    Console.Write($"[{item.GetString()}] ");
+                Console.WriteLine();
+            }
+        }
+        catch
+        {
+            Console.WriteLine($"Result: {result}");
+        }
     }
 
     private void HandleCd(string? path)

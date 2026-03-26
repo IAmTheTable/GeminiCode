@@ -9,17 +9,17 @@ public class ConversationManager
     public int TurnCount => _turnCount;
     public bool IsFirstMessage => !_systemPromptSent;
 
+    public void MarkSystemPromptSent()
+    {
+        _systemPromptSent = true;
+    }
+
     public string PrepareMessage(string userMessage)
     {
         _turnCount++;
         string message;
 
-        if (!_systemPromptSent)
-        {
-            message = SystemPrompt.Template + "\n\n" + userMessage;
-            _systemPromptSent = true;
-        }
-        else if (_turnCount > DriftPreventionThreshold)
+        if (_turnCount > DriftPreventionThreshold)
         {
             message = userMessage + "\n\n" + SystemPrompt.DriftReminder;
         }

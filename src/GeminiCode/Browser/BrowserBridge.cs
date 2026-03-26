@@ -2,6 +2,9 @@ using System.Text.Json;
 
 namespace GeminiCode.Browser;
 
+public record CodeBlock(string Language, string Code);
+public record GeminiResponse(string Text, List<CodeBlock> CodeBlocks);
+
 public class BrowserBridge : IDisposable
 {
     private BrowserWindow? _window;
@@ -67,6 +70,75 @@ public class BrowserBridge : IDisposable
         return result == "true";
     }
 
+    /// <summary>Runs a diagnostic script to discover the actual DOM selectors on the Gemini page.</summary>
+    public async Task<string> DiscoverSelectorsAsync()
+    {
+        var script = """
+            (function() {
+                var results = {};
+
+                // Find chat input candidates
+                var inputs = [];
+                // contenteditable divs (common for chat inputs)
+                document.querySelectorAll('[contenteditable="true"]').forEach(function(el) {
+                    inputs.push({tag: el.tagName, role: el.getAttribute('role'), ariaLabel: el.getAttribute('aria-label'), className: el.className.substring(0,100), id: el.id});
+                });
+                // textareas
+                document.querySelectorAll('textarea').forEach(function(el) {
+                    inputs.push({tag: 'textarea', role: el.getAttribute('role'), ariaLabel: el.getAttribute('aria-label'), placeholder: el.placeholder, className: el.className.substring(0,100), id: el.id});
+                });
+                // inputs
+                document.querySelectorAll('input[type="text"]').forEach(function(el) {
+                    inputs.push({tag: 'input', role: el.getAttribute('role'), ariaLabel: el.getAttribute('aria-label'), placeholder: el.placeholder, className: el.className.substring(0,100), id: el.id});
+                });
+                // rich text editors
+                document.querySelectorAll('[role="textbox"]').forEach(function(el) {
+                    inputs.push({tag: el.tagName, role: 'textbox', ariaLabel: el.getAttribute('aria-label'), className: el.className.substring(0,100), id: el.id});
+                });
+                results.inputCandidates = inputs;
+
+                // Find send button candidates
+                var buttons = [];
+                document.querySelectorAll('button').forEach(function(el) {
+                    var label = el.getAttribute('aria-label') || el.innerText || '';
+                    if (label.toLowerCase().includes('send') || label.toLowerCase().includes('submit') || el.querySelector('svg'))
+                    {
+                        buttons.push({ariaLabel: el.getAttribute('aria-label'), text: (el.innerText||'').substring(0,50), className: el.className.substring(0,100), id: el.id, matTooltip: el.getAttribute('mattooltip') || el.getAttribute('data-tooltip') || ''});
+                    }
+                });
+                results.sendButtonCandidates = buttons;
+
+                // Find response containers
+                var responses = [];
+                document.querySelectorAll('[class*="response"], [class*="message"], [class*="answer"], [class*="model-response"], [data-message-author-role="model"]').forEach(function(el) {
+                    responses.push({tag: el.tagName, className: el.className.substring(0,100), role: el.getAttribute('role'), dataRole: el.getAttribute('data-message-author-role')});
+                });
+                results.responseCandidates = responses.slice(0, 10);
+
+                // Page URL and title for context
+                results.url = window.location.href;
+                results.title = document.title;
+
+                // Check if signed in (look for common signed-in indicators)
+                results.hasAvatar = document.querySelector('img[aria-label*="Account"], img[alt*="avatar"], [data-ogsr-up]') !== null;
+
+                return JSON.stringify(results, null, 2);
+            })()
+            """;
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+
+        // Unescape the JSON string wrapper
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<string>(result) ?? result;
+        }
+        catch
+        {
+            return result;
+        }
+    }
+
     public async Task<Dictionary<string, bool>> RunHealthCheckAsync()
     {
         var script = _sessionMonitor.GetHealthCheckScript();
@@ -78,70 +150,203 @@ public class BrowserBridge : IDisposable
         return JsonSerializer.Deserialize<Dictionary<string, bool>>(unescaped) ?? new();
     }
 
+    /// <summary>Count current response elements so we can detect new ones after sending.</summary>
+    public async Task<int> GetResponseCountAsync()
+    {
+        var script = """
+            (function() {
+                // Count all model response containers in the conversation
+                var all = document.querySelectorAll('[class*="response"], [class*="message-content"], .model-response-text, .markdown-main-panel');
+                // Also try broader: any container with substantial text that isn't the input or ToS
+                var turns = document.querySelectorAll('[class*="conversation-turn"], [class*="turn-container"]');
+                return Math.max(all.length, turns.length);
+            })()
+            """;
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        try { return int.Parse(result.Trim('"')); }
+        catch { return 0; }
+    }
+
     public async Task SendMessageAsync(string message)
     {
         var escapedMessage = JsonSerializer.Serialize(message);
-        var script = $$"""
+
+        // Step 1: Focus the Quill editor and insert text via execCommand
+        // This is the only reliable way to set text in a contenteditable Quill.js editor
+        // because Quill ignores direct DOM mutations.
+        var insertScript = $$"""
             (function() {
                 var input = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
                 if (!input) return 'no_input';
 
-                // Focus and set value
+                // Focus and select all existing content
                 input.focus();
-                input.textContent = {{escapedMessage}};
-                input.dispatchEvent(new Event('input', { bubbles: true }));
+                var sel = window.getSelection();
+                var range = document.createRange();
+                range.selectNodeContents(input);
+                sel.removeAllRanges();
+                sel.addRange(range);
 
-                // Small delay then click send
-                setTimeout(function() {
-                    var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
-                    if (btn) btn.click();
-                }, 200);
+                // Delete existing content then insert new text
+                // execCommand is intercepted by Quill and updates its Delta model
+                document.execCommand('delete', false);
+                document.execCommand('insertText', false, {{escapedMessage}});
 
-                return 'sent';
+                return 'inserted';
             })()
             """;
-        await InvokeOnStaAsync(() => _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        var insertResult = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(insertScript));
+
+        // Step 2: Wait a bit for Quill to process, then click send
+        await Task.Delay(500);
+
+        var sendScript = $$"""
+            (function() {
+                var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
+                if (!btn) return 'no_button';
+                if (btn.disabled) return 'disabled';
+                btn.click();
+                return 'clicked';
+            })()
+            """;
+        var sendResult = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(sendScript));
     }
 
-    public async Task<string?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct)
+    public async Task<GeminiResponse?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct)
     {
-        var pollScript = $$"""
+        // Simple, robust poll: grab ALL text from the entire conversation area,
+        // then take everything after the last user message as the model response.
+        // This avoids fragile CSS selector matching for specific response containers.
+        var pollScript = """
             (function() {
-                var indicator = document.querySelector("{{EscapeJs(_selectors.TypingIndicator)}}");
-                if (indicator && indicator.offsetParent !== null) return JSON.stringify({done: false});
+                // Grab the full conversation text from the main content area
+                var main = document.querySelector('[class*="chat-container"]')
+                    || document.querySelector('.content-container')
+                    || document.querySelector('.main-content');
+                if (!main) return JSON.stringify({done: false, reason: 'no_main'});
 
-                var containers = document.querySelectorAll("{{EscapeJs(_selectors.ResponseContainer)}}");
-                if (containers.length === 0) return JSON.stringify({done: false});
+                var fullText = main.innerText || '';
 
-                var last = containers[containers.length - 1];
-                var text = last.innerText || last.textContent || '';
-                return JSON.stringify({done: true, text: text});
+                // Extract code blocks from pre/code elements in the conversation
+                var allCodeBlocks = [];
+                main.querySelectorAll('pre').forEach(function(el) {
+                    var code = el.innerText || el.textContent || '';
+                    if (code.trim().length > 20) {
+                        var lang = '';
+                        var codeEl = el.querySelector('code');
+                        var classes = ((codeEl ? codeEl.className : '') + ' ' + el.className + ' ' + (el.getAttribute('data-lang') || '')).toLowerCase();
+                        var langMatch = classes.match(/language-(\w+)|lang-(\w+)|(\bpython\b|\bjavascript\b|\btypescript\b|\bcsharp\b|\bjava\b|\bcpp\b|\brust\b|\bgo\b|\bruby\b|\bphp\b|\bbash\b|\bshell\b)/);
+                        if (langMatch) lang = langMatch[1] || langMatch[2] || langMatch[3] || '';
+                        if (!lang && code.includes('import ') && (code.includes('def ') || code.includes('print('))) lang = 'python';
+                        if (!lang && (code.includes('function ') || code.includes('const ') || code.includes('=>'))) lang = 'javascript';
+                        if (!lang && code.includes('using ') && code.includes('namespace ')) lang = 'csharp';
+                        allCodeBlocks.push({language: lang, code: code.trim()});
+                    }
+                });
+                // Deduplicate
+                var seen = {};
+                allCodeBlocks = allCodeBlocks.filter(function(b) {
+                    var key = b.code.substring(0, 80);
+                    if (seen[key]) return false;
+                    seen[key] = true;
+                    return true;
+                });
+
+                return JSON.stringify({done: true, text: fullText, codeBlocks: allCodeBlocks});
             })()
             """;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
-        // Initial delay to let Gemini start processing
-        await Task.Delay(2000, cts.Token);
+        // Capture the conversation text BEFORE the response arrives
+        string? baselineText = null;
+        try
+        {
+            var baseResult = await InvokeOnStaAsync(() =>
+                _window!.WebView.CoreWebView2.ExecuteScriptAsync(pollScript));
+            var baseUnescaped = JsonSerializer.Deserialize<string>(baseResult);
+            if (baseUnescaped != null)
+            {
+                using var baseDoc = JsonDocument.Parse(baseUnescaped);
+                if (baseDoc.RootElement.GetProperty("done").GetBoolean())
+                    baselineText = baseDoc.RootElement.GetProperty("text").GetString();
+            }
+        }
+        catch { }
+
+        // Wait for Gemini to start processing
+        await Task.Delay(3000, cts.Token);
+
+        string? lastText = null;
+        int stableCount = 0;
 
         while (!cts.Token.IsCancellationRequested)
         {
-            var resultJson = await InvokeOnStaAsync(() =>
-                _window!.WebView.CoreWebView2.ExecuteScriptAsync(pollScript));
-
-            var unescaped = JsonSerializer.Deserialize<string>(resultJson);
-            if (unescaped != null)
+            try
             {
-                using var doc = JsonDocument.Parse(unescaped);
-                if (doc.RootElement.GetProperty("done").GetBoolean())
-                    return doc.RootElement.GetProperty("text").GetString();
+                var resultJson = await InvokeOnStaAsync(() =>
+                    _window!.WebView.CoreWebView2.ExecuteScriptAsync(pollScript));
+
+                var unescaped = JsonSerializer.Deserialize<string>(resultJson);
+                if (unescaped != null)
+                {
+                    using var doc = JsonDocument.Parse(unescaped);
+                    if (doc.RootElement.GetProperty("done").GetBoolean())
+                    {
+                        var fullText = doc.RootElement.GetProperty("text").GetString() ?? "";
+
+                        // Extract only the NEW text (after baseline)
+                        var responseText = fullText;
+                        if (baselineText != null && fullText.Length > baselineText.Length)
+                        {
+                            responseText = fullText[baselineText.Length..].Trim();
+                        }
+
+                        // Skip if no new content yet
+                        if (string.IsNullOrWhiteSpace(responseText) || responseText.Length < 5)
+                        {
+                            await Task.Delay(1000, cts.Token);
+                            continue;
+                        }
+
+                        // Wait for text to stabilize (2 consecutive identical polls = done)
+                        if (responseText == lastText)
+                        {
+                            stableCount++;
+                            if (stableCount >= 2)
+                            {
+                                var codeBlocks = new List<CodeBlock>();
+                                if (doc.RootElement.TryGetProperty("codeBlocks", out var blocksEl))
+                                {
+                                    foreach (var block in blocksEl.EnumerateArray())
+                                    {
+                                        var lang = block.GetProperty("language").GetString() ?? "";
+                                        var code = block.GetProperty("code").GetString() ?? "";
+                                        if (!string.IsNullOrWhiteSpace(code))
+                                            codeBlocks.Add(new CodeBlock(lang, code));
+                                    }
+                                }
+                                return new GeminiResponse(responseText, codeBlocks);
+                            }
+                        }
+                        else
+                        {
+                            lastText = responseText;
+                            stableCount = 0;
+                        }
+                    }
+                }
             }
+            catch { }
 
             await Task.Delay(1000, cts.Token);
         }
 
-        return null; // Timed out
+        return null;
     }
 
     public async Task StartNewChatAsync()
@@ -182,6 +387,190 @@ public class BrowserBridge : IDisposable
             }
         });
         return tcs.Task;
+    }
+
+    /// <summary>Switches the Gemini model mode (e.g., "Flash", "Pro", "Thinking").</summary>
+    public async Task<string> SwitchModelAsync(string modeName)
+    {
+        // Step 1: Click the mode picker button to open the dropdown
+        var openScript = """
+            (function() {
+                var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+                if (!btn) return 'no_picker';
+                btn.click();
+                return 'opened';
+            })()
+            """;
+        var openResult = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(openScript));
+
+        // Wait for menu to appear
+        await Task.Delay(500);
+
+        // Step 2: Find and click the menu item matching the mode name
+        var escapedMode = JsonSerializer.Serialize(modeName.ToLowerInvariant());
+        var selectScript = $$$"""
+            (function() {
+                var modeName = {{{escapedMode}}};
+                // Look for menu items in the dropdown
+                var items = document.querySelectorAll(
+                    '[role="menuitem"], [role="option"], mat-option, .mat-mdc-menu-item, ' +
+                    '[class*="mode-option"], [class*="model-option"], ' +
+                    '.cdk-overlay-pane button, .cdk-overlay-pane [role="menuitemradio"]'
+                );
+                var found = null;
+                var available = [];
+                items.forEach(function(el) {
+                    var text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    available.push(text);
+                    if (text.includes(modeName)) {
+                        found = el;
+                    }
+                });
+                if (found) {
+                    found.click();
+                    return JSON.stringify({success: true, selected: found.innerText.trim(), available: available});
+                }
+                return JSON.stringify({success: false, available: available});
+            })()
+            """;
+        var selectResult = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(selectScript));
+
+        try { return JsonSerializer.Deserialize<string>(selectResult) ?? selectResult; }
+        catch { return selectResult; }
+    }
+
+    /// <summary>Gets the currently selected model mode.</summary>
+    public async Task<string> GetCurrentModelAsync()
+    {
+        var script = """
+            (function() {
+                var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+                if (!btn) return 'unknown';
+                return (btn.innerText || btn.textContent || 'unknown').trim();
+            })()
+            """;
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        try { return JsonSerializer.Deserialize<string>(result) ?? result; }
+        catch { return result; }
+    }
+
+    /// <summary>Discovers model selector elements in the Gemini UI.</summary>
+    public async Task<string> DiscoverModelSelectorAsync()
+    {
+        var script = """
+            (function() {
+                var results = {};
+
+                // Look for model/mode selector buttons and dropdowns
+                var selectors = [];
+                document.querySelectorAll('button, [role="button"], [role="listbox"], [role="combobox"], [role="tab"], [role="menuitem"], mat-select, [class*="model"], [class*="selector"], [class*="dropdown"], [class*="mode"], [class*="chip"]').forEach(function(el) {
+                    var text = (el.innerText || el.textContent || '').trim();
+                    var label = el.getAttribute('aria-label') || '';
+                    if (text.length > 0 && text.length < 100) {
+                        selectors.push({
+                            tag: el.tagName,
+                            text: text.substring(0, 80),
+                            ariaLabel: label,
+                            className: el.className.substring(0, 150),
+                            role: el.getAttribute('role'),
+                            id: el.id,
+                            dataAttrs: Array.from(el.attributes).filter(a => a.name.startsWith('data-')).map(a => a.name + '=' + a.value.substring(0,50)).join(', ')
+                        });
+                    }
+                });
+                results.selectorCandidates = selectors;
+
+                // Specifically look for anything mentioning model names
+                var modelMentions = [];
+                var allText = document.body.querySelectorAll('*');
+                for (var i = 0; i < allText.length; i++) {
+                    var el = allText[i];
+                    var t = (el.innerText || '').trim().toLowerCase();
+                    if ((t.includes('flash') || t.includes('thinking') || t.includes('pro') || t.includes('2.5') || t.includes('2.0') || t.includes('gemini')) && t.length < 100 && el.children.length < 5) {
+                        modelMentions.push({
+                            tag: el.tagName,
+                            text: (el.innerText||'').substring(0, 80),
+                            className: el.className.substring(0, 150),
+                            ariaLabel: el.getAttribute('aria-label') || '',
+                            parent: el.parentElement ? el.parentElement.className.substring(0, 100) : ''
+                        });
+                    }
+                }
+                results.modelMentions = modelMentions.slice(0, 20);
+
+                return JSON.stringify(results, null, 2);
+            })()
+            """;
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        try { return JsonSerializer.Deserialize<string>(result) ?? result; }
+        catch { return result; }
+    }
+
+    /// <summary>Dumps all text-bearing elements after a response to find the right response container.</summary>
+    public async Task<string> DiscoverResponseDomAsync()
+    {
+        var script = """
+            (function() {
+                var results = {};
+
+                // Find model turn containers (Gemini typically wraps each turn)
+                var turns = [];
+                document.querySelectorAll('[data-turn-id], [class*="model-response"], [class*="response-container"], [class*="message-content"]').forEach(function(el) {
+                    turns.push({tag: el.tagName, className: el.className.substring(0,150), text: (el.innerText||'').substring(0,200), dataAttrs: Array.from(el.attributes).filter(a => a.name.startsWith('data-')).map(a => a.name + '=' + a.value).join(', ')});
+                });
+                results.turnContainers = turns.slice(0, 10);
+
+                // Find all elements with 'message' in class
+                var msgs = [];
+                document.querySelectorAll('[class*="message"]').forEach(function(el) {
+                    var text = (el.innerText || '').trim();
+                    if (text.length > 10 && text.length < 5000) {
+                        msgs.push({tag: el.tagName, className: el.className.substring(0,150), textPreview: text.substring(0,200), childCount: el.children.length});
+                    }
+                });
+                results.messageElements = msgs.slice(0, 15);
+
+                // Find all elements with markdown-like content (code blocks, etc)
+                var markdown = [];
+                document.querySelectorAll('code, pre, [class*="markdown"], [class*="code-block"], [class*="response"]').forEach(function(el) {
+                    markdown.push({tag: el.tagName, className: el.className.substring(0,150), textPreview: (el.innerText||'').substring(0,200), parent: el.parentElement ? el.parentElement.className.substring(0,100) : ''});
+                });
+                results.markdownElements = markdown.slice(0, 10);
+
+                // Find the Gemini conversation container
+                var convos = [];
+                document.querySelectorAll('[class*="conversation"], [class*="chat-history"], [class*="turn"]').forEach(function(el) {
+                    convos.push({tag: el.tagName, className: el.className.substring(0,150), childCount: el.children.length});
+                });
+                results.conversationContainers = convos.slice(0, 5);
+
+                // Brute force: find any large text block that looks like an AI response
+                var largeText = [];
+                document.querySelectorAll('div, section, article').forEach(function(el) {
+                    var text = (el.innerText || '').trim();
+                    if (text.length > 100 && text.length < 10000 && el.children.length < 50) {
+                        // Check it's not a nav, header, or footer
+                        var tag = el.closest('nav, header, footer, [role="navigation"], [role="banner"]');
+                        if (!tag) {
+                            largeText.push({tag: el.tagName, className: el.className.substring(0,150), textPreview: text.substring(0,300), len: text.length});
+                        }
+                    }
+                });
+                // Sort by text length descending
+                largeText.sort(function(a,b) { return b.len - a.len; });
+                results.largeTextBlocks = largeText.slice(0, 10);
+
+                return JSON.stringify(results, null, 2);
+            })()
+            """;
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        try { return JsonSerializer.Deserialize<string>(result) ?? result; }
+        catch { return result; }
     }
 
     private static string EscapeJs(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");

@@ -1,3 +1,4 @@
+// src/GeminiCode/Permissions/RiskAssessor.cs
 using System.Text.RegularExpressions;
 using GeminiCode.Tools;
 

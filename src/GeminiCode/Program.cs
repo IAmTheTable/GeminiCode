@@ -15,8 +15,12 @@ public class Program
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Console.WriteLine($"{AnsiHelper.Bold}GeminiCode v0.1.0{AnsiHelper.Reset}");
 
+        // Parse flags vs positional args
+        var flags = args.Where(a => a.StartsWith("--")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var positional = args.Where(a => !a.StartsWith("--")).ToArray();
+
         // Determine working directory
-        var workDir = args.Length > 0 ? Path.GetFullPath(args[0]) : Directory.GetCurrentDirectory();
+        var workDir = positional.Length > 0 ? Path.GetFullPath(positional[0]) : Directory.GetCurrentDirectory();
         if (!Directory.Exists(workDir))
         {
             Console.Error.WriteLine($"Directory not found: {workDir}");
@@ -50,6 +54,46 @@ public class Program
 
         Console.WriteLine("Opening Gemini browser...");
         await browser.StartAsync();
+
+        // Check for --discover-selectors mode
+        if (flags.Contains("--discover-selectors"))
+        {
+            Console.WriteLine($"{AnsiHelper.Yellow}Selector discovery mode.{AnsiHelper.Reset}");
+            Console.WriteLine("Sign in to Gemini in the browser window, then press Enter here...");
+            Console.ReadLine();
+            Console.WriteLine("Scanning DOM...");
+            var discovered = await browser.DiscoverSelectorsAsync();
+            Console.WriteLine(discovered);
+            Console.WriteLine($"\n{AnsiHelper.Yellow}Update selectors.json at: {ConfigLoader.AppDataPath}/selectors.json{AnsiHelper.Reset}");
+            browser.Dispose();
+            return;
+        }
+
+        // Discover model selector DOM
+        if (flags.Contains("--discover-models"))
+        {
+            Console.WriteLine($"{AnsiHelper.Yellow}Model selector discovery mode.{AnsiHelper.Reset}");
+            Console.WriteLine("Wait for Gemini to load, then press Enter here...");
+            Console.ReadLine();
+            Console.WriteLine("Scanning model selector DOM...");
+            var discovered = await browser.DiscoverModelSelectorAsync();
+            Console.WriteLine(discovered);
+            browser.Dispose();
+            return;
+        }
+
+        // Discover response DOM after a message has been sent
+        if (flags.Contains("--discover-responses"))
+        {
+            Console.WriteLine($"{AnsiHelper.Yellow}Response discovery mode.{AnsiHelper.Reset}");
+            Console.WriteLine("Sign in, send a message manually in the browser, wait for Gemini to respond, then press Enter here...");
+            Console.ReadLine();
+            Console.WriteLine("Scanning response DOM...");
+            var discovered = await browser.DiscoverResponseDomAsync();
+            Console.WriteLine(discovered);
+            browser.Dispose();
+            return;
+        }
 
         // Wait for authentication
         Console.WriteLine($"Waiting for sign-in... {AnsiHelper.Dim}(sign in via the browser window){AnsiHelper.Reset}");
