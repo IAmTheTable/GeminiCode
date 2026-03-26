@@ -172,82 +172,90 @@ public class BrowserBridge : IDisposable
     {
         var escapedMessage = JsonSerializer.Serialize(message);
 
-        // Use Quill's API directly to set the full text content.
-        // execCommand('insertText') truncates multi-line text.
-        // We find the Quill instance through the editor element and call its API.
+        // Strategy: Use Quill's API with 'user' source to trigger Angular change detection,
+        // then fire DOM events to enable the send button.
         var insertScript = $$"""
             (function() {
                 var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
                 if (!editor) return 'no_input';
 
-                // Try to find the Quill instance
-                // Quill stores itself on the parent .ql-container element
+                // Find Quill instance
                 var container = editor.closest('.ql-container');
                 var quill = container ? container.__quill : null;
 
                 if (quill) {
-                    // Use Quill API — most reliable for multi-line text
-                    quill.setText({{escapedMessage}});
-                    return 'quill_set';
-                }
+                    // Clear and insert with 'user' source — this triggers Quill's text-change event
+                    // which Angular listens to for enabling the send button
+                    var len = quill.getLength();
+                    if (len > 1) quill.deleteText(0, len - 1, 'user');
+                    quill.insertText(0, {{escapedMessage}}, 'user');
 
-                // Fallback: use clipboard-based paste via DataTransfer
-                editor.focus();
-                var dt = new DataTransfer();
-                dt.setData('text/plain', {{escapedMessage}});
-                var pasteEvent = new ClipboardEvent('paste', {
-                    clipboardData: dt,
-                    bubbles: true,
-                    cancelable: true
-                });
-                editor.dispatchEvent(pasteEvent);
-
-                // If paste didn't work, try direct DOM manipulation + input event
-                if (!editor.textContent || editor.textContent.trim().length < 10) {
-                    editor.innerHTML = {{escapedMessage}}.split('\n').map(function(line) {
-                        return '<p>' + line.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</p>';
-                    }).join('');
+                    // Also fire DOM events to ensure Angular picks up the change
                     editor.dispatchEvent(new Event('input', { bubbles: true }));
+                    editor.dispatchEvent(new Event('change', { bubbles: true }));
+                    editor.dispatchEvent(new Event('keyup', { bubbles: true }));
+
+                    return 'quill_inserted';
                 }
 
-                return 'fallback_set';
+                // Fallback: execCommand approach (works for short text)
+                editor.focus();
+                var sel = window.getSelection();
+                var range = document.createRange();
+                range.selectNodeContents(editor);
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.execCommand('delete', false);
+                document.execCommand('insertText', false, {{escapedMessage}});
+
+                return 'execcommand_inserted';
             })()
             """;
-        var insertResult = await InvokeOnStaAsync(() =>
+        await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(insertScript));
 
-        // Wait for Quill/editor to process the content
-        await Task.Delay(500);
+        // Wait for Angular/Quill change detection to process
+        await Task.Delay(800);
 
-        // Click send button
-        var sendScript = $$"""
-            (function() {
-                var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
-                if (!btn) return 'no_button';
-                if (btn.disabled) {
-                    // Try triggering input event on editor to enable button
-                    var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
-                    if (editor) {
-                        editor.dispatchEvent(new Event('input', { bubbles: true }));
-                        editor.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    // Wait a moment and retry
-                    return 'disabled_retry';
-                }
-                btn.click();
-                return 'clicked';
-            })()
-            """;
-        var sendResult = await InvokeOnStaAsync(() =>
-            _window!.WebView.CoreWebView2.ExecuteScriptAsync(sendScript));
-
-        // If button was disabled, wait and retry
-        var resultStr = sendResult.Trim('"');
-        if (resultStr == "disabled_retry")
+        // Click send — retry loop in case button needs a moment to enable
+        for (int attempt = 0; attempt < 5; attempt++)
         {
-            await Task.Delay(500);
-            sendResult = await InvokeOnStaAsync(() =>
+            var sendScript = $$"""
+                (function() {
+                    var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
+                    if (!btn) return 'no_button';
+                    if (btn.disabled) return 'disabled';
+                    btn.click();
+                    return 'clicked';
+                })()
+                """;
+            var sendResult = await InvokeOnStaAsync(() =>
                 _window!.WebView.CoreWebView2.ExecuteScriptAsync(sendScript));
+
+            var result = sendResult.Trim('"');
+            if (result == "clicked") return;
+            if (result == "no_button") return;
+
+            // Button still disabled — try to nudge it
+            if (attempt < 4)
+            {
+                var nudgeScript = $$"""
+                    (function() {
+                        var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
+                        if (!editor) return;
+                        // Simulate a keypress to trigger Angular's change detection
+                        editor.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', bubbles: true}));
+                        editor.dispatchEvent(new KeyboardEvent('keyup', {key: ' ', bubbles: true}));
+                        editor.dispatchEvent(new Event('input', {bubbles: true}));
+                        // Also try triggering on the form/parent
+                        var form = editor.closest('form') || editor.closest('[class*="input-area"]');
+                        if (form) form.dispatchEvent(new Event('input', {bubbles: true}));
+                    })()
+                    """;
+                await InvokeOnStaAsync(() =>
+                    _window!.WebView.CoreWebView2.ExecuteScriptAsync(nudgeScript));
+                await Task.Delay(300);
+            }
         }
     }
 
