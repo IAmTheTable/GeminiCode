@@ -1,0 +1,7 @@
+{
+  "chatInput": "[aria-label='Talk to Gemini']",
+  "sendButton": "button[aria-label='Send message']",
+  "responseContainer": ".response-container",
+  "typingIndicator": ".typing-indicator",
+  "newChatButton": "[aria-label='New chat']"
+}
