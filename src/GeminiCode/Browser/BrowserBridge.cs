@@ -259,13 +259,10 @@ public class BrowserBridge : IDisposable
         }
     }
 
-    public async Task<GeminiResponse?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct)
+    /// <summary>Capture the current page state so WaitForResponseAsync can detect new content.</summary>
+    public async Task<(int textLen, int preCount)> CaptureBaselineAsync()
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
-        // Step 1: Capture baseline BEFORE response arrives (text length + pre count)
-        var baselineScript = """
+        var script = """
             (function() {
                 var main = document.querySelector('[class*="chat-container"]')
                     || document.querySelector('.content-container')
@@ -276,22 +273,26 @@ public class BrowserBridge : IDisposable
                 return JSON.stringify({textLen: textLen, preCount: preCount});
             })()
             """;
-
-        int baselineTextLen = 0;
-        int baselinePreCount = 0;
         try
         {
-            var baseResult = await InvokeOnStaAsync(() =>
-                _window!.WebView.CoreWebView2.ExecuteScriptAsync(baselineScript));
-            var baseUnescaped = JsonSerializer.Deserialize<string>(baseResult);
-            if (baseUnescaped != null)
+            var result = await InvokeOnStaAsync(() =>
+                _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+            var unescaped = JsonSerializer.Deserialize<string>(result);
+            if (unescaped != null)
             {
-                using var baseDoc = JsonDocument.Parse(baseUnescaped);
-                baselineTextLen = baseDoc.RootElement.GetProperty("textLen").GetInt32();
-                baselinePreCount = baseDoc.RootElement.GetProperty("preCount").GetInt32();
+                using var doc = JsonDocument.Parse(unescaped);
+                return (doc.RootElement.GetProperty("textLen").GetInt32(),
+                        doc.RootElement.GetProperty("preCount").GetInt32());
             }
         }
         catch { }
+        return (0, 0);
+    }
+
+    public async Task<GeminiResponse?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct, int baselineTextLen = 0, int baselinePreCount = 0)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
         // Step 2: Build poll script that uses baseline to extract only NEW content
         var pollScript = $$"""

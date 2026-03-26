@@ -44,10 +44,11 @@ public class AgentOrchestrator
             return true;
 
         Console.WriteLine($"{AnsiHelper.Dim}Initializing agent session...{AnsiHelper.Reset}");
+        var initBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(SystemPrompt.GenerateTemplate(_sandbox.WorkingDirectory));
         _conversation.MarkSystemPromptSent();
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct);
+        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);
         if (response != null)
         {
             Console.WriteLine($"{AnsiHelper.Green}Agent ready.{AnsiHelper.Reset}");
@@ -69,10 +70,11 @@ public class AgentOrchestrator
 
         var message = _conversation.PrepareMessage(userMessage);
 
-        // Track response count before sending so we can detect the new response
+        // Capture baseline BEFORE sending so we can detect only NEW content
+        var baseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(message);
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct);
+        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
         if (response == null)
         {
             Console.WriteLine($"{AnsiHelper.Yellow}Gemini response timed out. Type your message to retry, or /new to start fresh.{AnsiHelper.Reset}");
@@ -258,9 +260,10 @@ public class AgentOrchestrator
 
         // Send results back to Gemini
         var combinedResults = _conversation.PrepareToolResults(results);
+        var followBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(combinedResults);
 
-        var followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct);
+        var followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
         if (followUp == null) return null;
 
         return await ProcessResponseAsync(followUp, ct);
