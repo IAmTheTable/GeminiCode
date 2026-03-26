@@ -1,4 +1,5 @@
 // src/GeminiCode/Agent/AgentOrchestrator.cs
+using System.Text.RegularExpressions;
 using GeminiCode.Browser;
 using GeminiCode.Cli;
 using GeminiCode.Config;
@@ -160,28 +161,37 @@ public class AgentOrchestrator
     /// <summary>Remove known Gemini page boilerplate from response text.</summary>
     private static string CleanResponseText(string text)
     {
-        // Remove common boilerplate that leaks from the page footer/header
-        string[] boilerplate = [
-            "Welcome to Gemini, your personal AI assistant",
-            "Google Terms",
-            "Opens in a new window",
-            "Gemini Apps Privacy Notice",
-            "Chats are reviewed and used to improve Google AI",
-            "Learn about your choices",
-            "Gemini can make mistakes, so double-check it",
-            "Info about your location",
-            "is also stored with your Gemini Apps activity",
-            "Gemini is AI and can make mistakes.",
-            "Tools\nFast",
-            "Tools\nPro",
-            "Tools\nThinking",
-        ];
+        // Use regex to strip the entire ToS/disclaimer block in one go
+        text = Regex.Replace(text,
+            @"Welcome to Gemini.*?Gemini Apps activity\.?",
+            "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
-        foreach (var bp in boilerplate)
-            text = text.Replace(bp, "", StringComparison.OrdinalIgnoreCase);
+        // Strip footer elements
+        text = Regex.Replace(text,
+            @"Google Terms.*?apply\.?",
+            "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
-        // Clean up excessive whitespace left behind
-        text = System.Text.RegularExpressions.Regex.Replace(text.Trim(), @"\n{3,}", "\n\n");
+        text = Regex.Replace(text,
+            @"Opens in a new window",
+            "", RegexOptions.IgnoreCase);
+
+        text = Regex.Replace(text,
+            @"Gemini (is AI and )?can make mistakes.*?$",
+            "", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+        // Strip model picker labels that leak in
+        text = Regex.Replace(text, @"\n(Tools\n)?(Fast|Pro|Thinking)\s*$", "", RegexOptions.Multiline);
+
+        // Strip "Code snippet" labels Gemini adds
+        text = Regex.Replace(text, @"\nCode snippet\s*\n", "\n", RegexOptions.IgnoreCase);
+
+        // Clean up leftover punctuation fragments from removed boilerplate
+        text = Regex.Replace(text, @"\n\s*and the\s*\n", "\n");
+        text = Regex.Replace(text, @"\n\s*apply\.\s*\n", "\n");
+        text = Regex.Replace(text, @"\n\s*\.\s*\n", "\n");
+
+        // Clean up excessive whitespace
+        text = Regex.Replace(text.Trim(), @"\n{3,}", "\n\n");
         return text;
     }
 

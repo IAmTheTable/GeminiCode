@@ -4,10 +4,13 @@ namespace GeminiCode.Tools;
 
 public record ToolResult(string Name, bool Success, string Output)
 {
-    public string ToProtocolString() =>
-        $"<tool_result>\n{{\"name\": \"{Name}\", \"success\": {Success.ToString().ToLowerInvariant()}, " +
-        (Success ? $"\"output\": {JsonSerializer.Serialize(Output)}" : $"\"error\": {JsonSerializer.Serialize(Output)}") +
-        "}}\n</tool_result>";
+    public string ToProtocolString()
+    {
+        var truncated = Output.Length > 2000 ? Output[..2000] + "\n[truncated]" : Output;
+        return Success
+            ? $"tool_result({Name}): {truncated}"
+            : $"tool_error({Name}): {truncated}";
+    }
 }
 
 public enum RiskLevel { Low, Medium, High }
