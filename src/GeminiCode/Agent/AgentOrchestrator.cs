@@ -17,6 +17,9 @@ public class AgentOrchestrator
     private readonly AppSettings _settings;
     private const int MaxRetries = 2;
 
+    /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
+    public event Action<string>? FileSaved;
+
     public AgentOrchestrator(
         BrowserBridge browser,
         ToolRegistry tools,
@@ -174,6 +177,8 @@ public class AgentOrchestrator
                         var result = await writeTool.ExecuteAsync(writeParams, ct);
                         var color = result.Success ? AnsiHelper.Green : AnsiHelper.Red;
                         Console.WriteLine($"{color}{result.Output}{AnsiHelper.Reset}");
+                        if (result.Success)
+                            FileSaved?.Invoke(input);
                     }
                 }
             }

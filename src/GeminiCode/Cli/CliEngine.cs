@@ -1,6 +1,10 @@
 // src/GeminiCode/Cli/CliEngine.cs
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using GeminiCode.Agent;
 using GeminiCode.Browser;
+using GeminiCode.Permissions;
+using GeminiCode.Tools;
 
 namespace GeminiCode.Cli;
 
@@ -9,12 +13,18 @@ public class CliEngine
     private readonly AgentOrchestrator _orchestrator;
     private readonly CommandHandler _commands;
     private readonly BrowserBridge _browser;
+    private readonly ToolRegistry _tools;
+    private readonly PermissionGate _permissionGate;
+    private string? _lastSavedFile;
 
-    public CliEngine(AgentOrchestrator orchestrator, CommandHandler commands, BrowserBridge browser)
+    public CliEngine(AgentOrchestrator orchestrator, CommandHandler commands, BrowserBridge browser,
+        ToolRegistry tools, PermissionGate permissionGate)
     {
         _orchestrator = orchestrator;
         _commands = commands;
         _browser = browser;
+        _tools = tools;
+        _permissionGate = permissionGate;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -36,6 +46,13 @@ public class CliEngine
 
             // Slash commands
             if (await _commands.TryHandleAsync(input))
+            {
+                Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
+                continue;
+            }
+
+            // Smart local commands — detect "run <file>" patterns and execute directly
+            if (await TryHandleLocalRunAsync(input, ct))
             {
                 Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
                 continue;
@@ -73,6 +90,70 @@ public class CliEngine
 
             Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
         }
+    }
+
+    /// <summary>Track the last file we saved so "run it" / "run the script" works.</summary>
+    public void NotifyFileSaved(string path) => _lastSavedFile = path;
+
+    /// <summary>Detect "run script.py", "run it", "run the script", "execute it" and handle locally.</summary>
+    private async Task<bool> TryHandleLocalRunAsync(string input, CancellationToken ct)
+    {
+        // Match patterns like "run script.py", "run the script", "run it", "execute it"
+        var runMatch = Regex.Match(input, @"^(?:run|execute|launch)\s+(?:the\s+)?(?:script|it|file|that)?\s*$", RegexOptions.IgnoreCase);
+        var runFileMatch = Regex.Match(input, @"^(?:run|execute|launch)\s+(\S+\.(?:py|js|ts|sh|ps1|bat|cmd|rb|go|rs))\s*$", RegexOptions.IgnoreCase);
+
+        string? fileToRun = null;
+
+        if (runFileMatch.Success)
+        {
+            fileToRun = runFileMatch.Groups[1].Value;
+        }
+        else if (runMatch.Success && _lastSavedFile != null)
+        {
+            fileToRun = _lastSavedFile;
+        }
+
+        if (fileToRun == null) return false;
+
+        // Determine the command based on file extension
+        var ext = Path.GetExtension(fileToRun).ToLowerInvariant();
+        var command = ext switch
+        {
+            ".py" => $"python {fileToRun}",
+            ".js" => $"node {fileToRun}",
+            ".ts" => $"npx ts-node {fileToRun}",
+            ".sh" => $"bash {fileToRun}",
+            ".ps1" => $"powershell -File {fileToRun}",
+            ".bat" or ".cmd" => fileToRun,
+            ".rb" => $"ruby {fileToRun}",
+            ".go" => $"go run {fileToRun}",
+            _ => null
+        };
+
+        if (command == null) return false;
+
+        Console.WriteLine($"{AnsiHelper.Cyan}Running: {command}{AnsiHelper.Reset}");
+
+        // Use RunCommand tool with permission check
+        var runTool = _tools.GetTool("RunCommand");
+        if (runTool == null) return false;
+
+        var runParams = new Dictionary<string, System.Text.Json.JsonElement>();
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(new { command }));
+        foreach (var prop in doc.RootElement.EnumerateObject())
+            runParams[prop.Name] = prop.Value.Clone();
+
+        var permission = _permissionGate.RequestPermission(runTool, runParams);
+        if (permission == PermissionResult.Denied)
+        {
+            Console.WriteLine("Permission denied.");
+            return true;
+        }
+
+        var result = await runTool.ExecuteAsync(runParams, ct);
+        Console.WriteLine(result.Output);
+        return true;
     }
 
     private static string? ReadInput()

@@ -13,6 +13,7 @@ public class Program
     public static async Task Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+        AnsiHelper.Initialize();
         Console.WriteLine($"{AnsiHelper.Bold}GeminiCode v0.1.0{AnsiHelper.Reset}");
 
         // Parse flags vs positional args
@@ -115,7 +116,10 @@ public class Program
 
         // Initialize CLI
         var commands = new CommandHandler(browser, conversation, allowlist, sandbox);
-        var cli = new CliEngine(orchestrator, commands, browser);
+        var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate);
+
+        // Wire file-save notifications so "run it" works
+        orchestrator.FileSaved += path => cli.NotifyFileSaved(path);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(browser.BrowserClosedToken);
         await cli.RunAsync(cts.Token);
