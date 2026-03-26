@@ -172,47 +172,83 @@ public class BrowserBridge : IDisposable
     {
         var escapedMessage = JsonSerializer.Serialize(message);
 
-        // Step 1: Focus the Quill editor and insert text via execCommand
-        // This is the only reliable way to set text in a contenteditable Quill.js editor
-        // because Quill ignores direct DOM mutations.
+        // Use Quill's API directly to set the full text content.
+        // execCommand('insertText') truncates multi-line text.
+        // We find the Quill instance through the editor element and call its API.
         var insertScript = $$"""
             (function() {
-                var input = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
-                if (!input) return 'no_input';
+                var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
+                if (!editor) return 'no_input';
 
-                // Focus and select all existing content
-                input.focus();
-                var sel = window.getSelection();
-                var range = document.createRange();
-                range.selectNodeContents(input);
-                sel.removeAllRanges();
-                sel.addRange(range);
+                // Try to find the Quill instance
+                // Quill stores itself on the parent .ql-container element
+                var container = editor.closest('.ql-container');
+                var quill = container ? container.__quill : null;
 
-                // Delete existing content then insert new text
-                // execCommand is intercepted by Quill and updates its Delta model
-                document.execCommand('delete', false);
-                document.execCommand('insertText', false, {{escapedMessage}});
+                if (quill) {
+                    // Use Quill API — most reliable for multi-line text
+                    quill.setText({{escapedMessage}});
+                    return 'quill_set';
+                }
 
-                return 'inserted';
+                // Fallback: use clipboard-based paste via DataTransfer
+                editor.focus();
+                var dt = new DataTransfer();
+                dt.setData('text/plain', {{escapedMessage}});
+                var pasteEvent = new ClipboardEvent('paste', {
+                    clipboardData: dt,
+                    bubbles: true,
+                    cancelable: true
+                });
+                editor.dispatchEvent(pasteEvent);
+
+                // If paste didn't work, try direct DOM manipulation + input event
+                if (!editor.textContent || editor.textContent.trim().length < 10) {
+                    editor.innerHTML = {{escapedMessage}}.split('\n').map(function(line) {
+                        return '<p>' + line.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</p>';
+                    }).join('');
+                    editor.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+
+                return 'fallback_set';
             })()
             """;
         var insertResult = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(insertScript));
 
-        // Step 2: Wait a bit for Quill to process, then click send
+        // Wait for Quill/editor to process the content
         await Task.Delay(500);
 
+        // Click send button
         var sendScript = $$"""
             (function() {
                 var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
                 if (!btn) return 'no_button';
-                if (btn.disabled) return 'disabled';
+                if (btn.disabled) {
+                    // Try triggering input event on editor to enable button
+                    var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
+                    if (editor) {
+                        editor.dispatchEvent(new Event('input', { bubbles: true }));
+                        editor.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    // Wait a moment and retry
+                    return 'disabled_retry';
+                }
                 btn.click();
                 return 'clicked';
             })()
             """;
         var sendResult = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(sendScript));
+
+        // If button was disabled, wait and retry
+        var resultStr = sendResult.Trim('"');
+        if (resultStr == "disabled_retry")
+        {
+            await Task.Delay(500);
+            sendResult = await InvokeOnStaAsync(() =>
+                _window!.WebView.CoreWebView2.ExecuteScriptAsync(sendScript));
+        }
     }
 
     public async Task<GeminiResponse?> WaitForResponseAsync(int timeoutSeconds, CancellationToken ct)
