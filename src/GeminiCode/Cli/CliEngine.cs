@@ -98,8 +98,8 @@ public class CliEngine
     /// <summary>Detect "run script.py", "run it", "run the script", "execute it" and handle locally.</summary>
     private async Task<bool> TryHandleLocalRunAsync(string input, CancellationToken ct)
     {
-        // Match patterns like "run script.py", "run the script", "run it", "execute it"
-        var runMatch = Regex.Match(input, @"^(?:run|execute|launch)\s+(?:the\s+)?(?:script|it|file|that)?\s*$", RegexOptions.IgnoreCase);
+        // Match: "run it", "run the script", "run script.py", "run", "execute it", "run command", etc.
+        var runMatch = Regex.Match(input, @"^(?:run|execute|launch)\s*(?:the\s+)?(?:script|it|file|that|command|this)?\s*$", RegexOptions.IgnoreCase);
         var runFileMatch = Regex.Match(input, @"^(?:run|execute|launch)\s+(\S+\.(?:py|js|ts|sh|ps1|bat|cmd|rb|go|rs))\s*$", RegexOptions.IgnoreCase);
 
         string? fileToRun = null;

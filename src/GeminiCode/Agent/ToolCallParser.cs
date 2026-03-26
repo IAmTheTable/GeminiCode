@@ -77,6 +77,17 @@ public static class ToolCallParser
             });
         }
 
+        // Strategy 3: JSON action format {"action": "execute_shell", "command": "..."}
+        if (toolCalls.Count == 0)
+        {
+            var jsonParsed = TryParseJsonAction(textContent);
+            if (jsonParsed != null)
+            {
+                toolCalls.Add(jsonParsed);
+                textContent = Regex.Replace(textContent, @"\{[\s\S]*?\}", "").Trim();
+            }
+        }
+
         textContent = Regex.Replace(textContent.Trim(), @"\n{3,}", "\n\n");
 
         return new ParseResult(toolCalls, textContent);
@@ -110,6 +121,45 @@ public static class ToolCallParser
         {
             return null;
         }
+    }
+
+    /// <summary>Parse JSON action format: {"action": "execute_shell", "command": "ls"}</summary>
+    private static ParsedToolCall? TryParseJsonAction(string text)
+    {
+        // Find JSON objects in the text
+        var jsonMatch = Regex.Match(text, @"\{[^{}]*""action""\s*:\s*""[^""]+""[^{}]*\}", RegexOptions.Singleline);
+        if (!jsonMatch.Success) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonMatch.Value);
+            var root = doc.RootElement;
+
+            var action = root.GetProperty("action").GetString()?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(action)) return null;
+
+            // Map action names to tool names
+            var toolName = action switch
+            {
+                "execute_shell" or "shell_command" or "run_command" or "execute" => "RunCommand",
+                "write_file" or "save_file" or "create_file" => "WriteFile",
+                "read_file" => "ReadFile",
+                "list_files" or "list_directory" => "ListFiles",
+                _ => null
+            };
+            if (toolName == null) return null;
+
+            // Extract parameters (everything except "action")
+            var parameters = new Dictionary<string, JsonElement>();
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (prop.Name != "action")
+                    parameters[prop.Name] = prop.Value.Clone();
+            }
+
+            return new ParsedToolCall(toolName, parameters);
+        }
+        catch { return null; }
     }
 
     /// <summary>Parse function-call style: write_file(path="hello.py", content="print('hi')")</summary>
