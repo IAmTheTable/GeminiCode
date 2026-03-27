@@ -91,6 +91,11 @@ public class AgentOrchestrator
     {
         // Clean boilerplate from response text
         var cleanText = CleanResponseText(response.Text);
+
+        // Debug: show first 200 chars of response
+        var preview = cleanText.Length > 200 ? cleanText[..200] : cleanText;
+        Console.WriteLine($"{AnsiHelper.Gray}[DEBUG] Response start: \"{preview}\"{AnsiHelper.Reset}");
+
         var parsed = ToolCallParser.Parse(cleanText);
 
         // Display conversational text
@@ -151,8 +156,8 @@ public class AgentOrchestrator
                 var suggestedName = $"script{ext}";
 
                 Console.WriteLine($"\n{AnsiHelper.Cyan}--- Code Block ({(string.IsNullOrEmpty(block.Language) ? "detected" : block.Language)}) ---{AnsiHelper.Reset}");
-                var preview = string.Join("\n", block.Code.Split('\n').Take(5));
-                Console.WriteLine(preview);
+                var codePreview = string.Join("\n", block.Code.Split('\n').Take(5));
+                Console.WriteLine(codePreview);
                 if (block.Code.Split('\n').Length > 5)
                     Console.WriteLine($"{AnsiHelper.Dim}... ({block.Code.Split('\n').Length} lines total){AnsiHelper.Reset}");
 

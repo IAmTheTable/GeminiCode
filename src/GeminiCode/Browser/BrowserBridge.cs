@@ -308,7 +308,10 @@ public class BrowserBridge : IDisposable
                 var fullText = main.innerText || '';
 
                 // Only return NEW text (after baseline)
-                var newText = fullText.length > baseTextLen ? fullText.substring(baseTextLen).trim() : '';
+                // Use a safety margin: back up 200 chars to avoid cutting into the response start
+                // (the user's message gets added to the DOM between baseline capture and response)
+                var safeStart = Math.max(0, baseTextLen - 200);
+                var newText = fullText.length > safeStart ? fullText.substring(safeStart).trim() : '';
                 if (!newText || newText.length < 5) return JSON.stringify({done: false, reason: 'no_new_text'});
 
                 // Only extract NEW code blocks (after baseline pre count)

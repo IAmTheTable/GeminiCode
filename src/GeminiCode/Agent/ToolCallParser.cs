@@ -40,26 +40,27 @@ public static class ToolCallParser
         ["execute_command"] = "RunCommand",
     };
 
-    // Tag-based patterns: [FILE:name]...[/FILE], [RUN]...[/RUN], [READ]...[/READ], [LIST]...[/LIST]
+    // Tag-based patterns: [FILE:name]...[/FILE], [RUN]...[/RUN], etc.
+    // Allow optional whitespace around brackets and inside tags (DOM rendering adds invisible chars)
     private static readonly Regex FileTagPattern = new(
-        @"\[FILE:([^\]]+)\]\s*\n([\s\S]*?)\n\s*\[/FILE\]",
-        RegexOptions.Compiled);
+        @"\[\s*FILE\s*:\s*([^\]]+?)\s*\]\s*\n([\s\S]*?)\n\s*\[\s*/\s*FILE\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex RunTagPattern = new(
-        @"\[RUN\](.*?)\[/RUN\]",
-        RegexOptions.Singleline | RegexOptions.Compiled);
+        @"\[\s*RUN\s*\](.*?)\[\s*/\s*RUN\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex ReadTagPattern = new(
-        @"\[READ\](.*?)\[/READ\]",
-        RegexOptions.Singleline | RegexOptions.Compiled);
+        @"\[\s*READ\s*\](.*?)\[\s*/\s*READ\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex ListTagPattern = new(
-        @"\[LIST\](.*?)\[/LIST\]",
-        RegexOptions.Singleline | RegexOptions.Compiled);
+        @"\[\s*LIST\s*\](.*?)\[\s*/\s*LIST\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex SearchTagPattern = new(
-        @"\[SEARCH\](.*?)\[/SEARCH\]",
-        RegexOptions.Singleline | RegexOptions.Compiled);
+        @"\[\s*SEARCH\s*\](.*?)\[\s*/\s*SEARCH\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static ParseResult Parse(string responseText)
     {
