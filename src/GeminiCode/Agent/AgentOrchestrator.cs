@@ -92,10 +92,6 @@ public class AgentOrchestrator
         // Clean boilerplate from response text
         var cleanText = CleanResponseText(response.Text);
 
-        // Debug: show first 200 chars of response
-        var preview = cleanText.Length > 200 ? cleanText[..200] : cleanText;
-        Console.WriteLine($"{AnsiHelper.Gray}[DEBUG] Response start: \"{preview}\"{AnsiHelper.Reset}");
-
         var parsed = ToolCallParser.Parse(cleanText);
 
         // Display conversational text
