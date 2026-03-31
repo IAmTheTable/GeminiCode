@@ -77,6 +77,14 @@ public class AgentOrchestrator
                 return null;
         }
 
+        // Check for pre-existing usage limit before sending
+        var preLimit = await _browser.CheckForLimitAsync();
+        if (preLimit != null)
+        {
+            HandleLimitDetected(preLimit);
+            return null;
+        }
+
         // Check model before sending
         await DetectModelChangeAsync("pre-send");
 
@@ -89,7 +97,21 @@ public class AgentOrchestrator
         var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
         if (response == null)
         {
+            // Timeout could be caused by a limit — check again
+            var postLimit = await _browser.CheckForLimitAsync();
+            if (postLimit != null)
+            {
+                HandleLimitDetected(postLimit);
+                return null;
+            }
             Console.WriteLine($"{AnsiHelper.Yellow}Gemini response timed out. Type your message to retry, or /new to start fresh.{AnsiHelper.Reset}");
+            return null;
+        }
+
+        // Check if the response itself indicates a limit
+        if (response.Limit != null)
+        {
+            HandleLimitDetected(response.Limit);
             return null;
         }
 
@@ -103,6 +125,28 @@ public class AgentOrchestrator
             await ReorientAfterModelSwitchAsync(ct);
 
         return result;
+    }
+
+    /// <summary>Display limit info and suggest next steps.</summary>
+    private void HandleLimitDetected(LimitInfo limit)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"{AnsiHelper.Red}── Usage Limit ─────────────────────────────────────{AnsiHelper.Reset}");
+        Console.WriteLine($"  {AnsiHelper.Yellow}{limit.Message}{AnsiHelper.Reset}");
+
+        if (!string.IsNullOrEmpty(limit.RetryAfter))
+            Console.WriteLine($"  {AnsiHelper.Dim}Retry after: {limit.RetryAfter}{AnsiHelper.Reset}");
+
+        var currentModel = _conversation.CurrentModel ?? "unknown";
+        Console.WriteLine();
+        Console.WriteLine($"  {AnsiHelper.Dim}Current model: {currentModel}{AnsiHelper.Reset}");
+        Console.WriteLine($"  {AnsiHelper.Cyan}Options:{AnsiHelper.Reset}");
+        Console.WriteLine($"    /model flash     — switch to Flash (higher limits)");
+        Console.WriteLine($"    /model pro       — switch to Pro");
+        Console.WriteLine($"    /model thinking  — switch to Thinking");
+        Console.WriteLine($"    /new             — start a new conversation");
+        Console.WriteLine($"    {AnsiHelper.Dim}Or just wait and try again{AnsiHelper.Reset}");
+        Console.WriteLine($"{AnsiHelper.Red}────────────────────────────────────────────────────{AnsiHelper.Reset}");
     }
 
     /// <summary>Detect model changes and notify user. Returns true if model changed.</summary>
@@ -385,7 +429,18 @@ public class AgentOrchestrator
         await _browser.SendMessageAsync(combinedResults);
 
         var followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
-        if (followUp == null) return null;
+        if (followUp == null)
+        {
+            var limit = await _browser.CheckForLimitAsync();
+            if (limit != null) { HandleLimitDetected(limit); return null; }
+            return null;
+        }
+
+        if (followUp.Limit != null)
+        {
+            HandleLimitDetected(followUp.Limit);
+            return null;
+        }
 
         return await ProcessResponseAsync(followUp, ct);
     }

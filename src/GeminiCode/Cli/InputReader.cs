@@ -17,6 +17,7 @@ public class InputReader
         new("/model flash",    "Switch to Flash"),
         new("/model pro",      "Switch to Pro"),
         new("/model thinking", "Switch to Thinking"),
+        new("/limit",          "Check usage limit status"),
         new("/browser",        "Focus browser window"),
         new("/history",        "Show turn count"),
         new("/allowlist",      "Show auto-approved tools"),

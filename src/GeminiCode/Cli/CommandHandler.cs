@@ -65,6 +65,9 @@ public class CommandHandler
             case "/model":
                 await HandleModelAsync(arg);
                 return true;
+            case "/limit":
+                await HandleLimitCheckAsync();
+                return true;
             case "/paste":
                 Console.WriteLine("Paste mode: enter text, then type END on a new line to finish.");
                 return true;
@@ -85,6 +88,7 @@ public class CommandHandler
               /clear           — Clear terminal
               /new             — Start a new Gemini conversation
               /model <name>    — Switch Gemini mode (flash/pro/thinking)
+              /limit           — Check usage limit status
               /browser         — Bring browser window to foreground
               /history         — Show conversation turn count
               /allowlist       — Show current session allowlist
@@ -202,6 +206,23 @@ public class CommandHandler
         _sandbox.UpdateWorkingDirectory(resolved);
         _allowlist.Clear();
         Console.WriteLine($"Working directory changed to {resolved}. Allowlist cleared.");
+    }
+
+    private async Task HandleLimitCheckAsync()
+    {
+        Console.Write($"{AnsiHelper.Dim}Checking for usage limits...{AnsiHelper.Reset}");
+        var limit = await _browser.CheckForLimitAsync();
+        if (limit != null)
+        {
+            Console.WriteLine($"\r{AnsiHelper.Yellow}Limit detected:{AnsiHelper.Reset} {limit.Message}");
+            if (!string.IsNullOrEmpty(limit.RetryAfter))
+                Console.WriteLine($"  Retry after: {limit.RetryAfter}");
+            Console.WriteLine($"  Try /model to switch or wait.");
+        }
+        else
+        {
+            Console.WriteLine($"\r{AnsiHelper.Green}No usage limits detected.              {AnsiHelper.Reset}");
+        }
     }
 
     private void HandleExit()

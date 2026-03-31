@@ -3,7 +3,8 @@ using System.Text.Json;
 namespace GeminiCode.Browser;
 
 public record CodeBlock(string Language, string Code);
-public record GeminiResponse(string Text, List<CodeBlock> CodeBlocks);
+public record LimitInfo(string Message, string? RetryAfter, string? SuggestedModel);
+public record GeminiResponse(string Text, List<CodeBlock> CodeBlocks, LimitInfo? Limit = null);
 
 public class BrowserBridge : IDisposable
 {
@@ -394,7 +395,48 @@ public class BrowserBridge : IDisposable
                     }
                 }
 
-                return JSON.stringify({done: true, text: newText, codeBlocks: newCodeBlocks});
+                // Check for usage limit indicators in the DOM
+                var limitInfo = null;
+                var limitSelectors = [
+                    '[class*="limit"]', '[class*="error-message"]', '[class*="rate-limit"]',
+                    '[class*="quota"]', '[class*="warning-banner"]', '[class*="snackbar"]',
+                    '[class*="toast"]', '[role="alert"]', '[class*="error-container"]',
+                    '[class*="blocked"]', '[class*="unavailable"]'
+                ];
+                for (var s = 0; s < limitSelectors.length; s++) {
+                    var els = document.querySelectorAll(limitSelectors[s]);
+                    for (var e = 0; e < els.length; e++) {
+                        var t = (els[e].innerText || '').toLowerCase();
+                        if (t.includes('limit') || t.includes('quota') || t.includes('too many') ||
+                            t.includes('try again') || t.includes('rate limit') || t.includes('exceeded') ||
+                            t.includes('wait') || t.includes('unavailable') || t.includes('capacity')) {
+                            var retryMatch = t.match(/(?:try again|wait|in)\s+(?:about\s+)?(\d+\s*(?:minute|hour|second|min|hr|sec)s?)/i);
+                            limitInfo = {
+                                message: els[e].innerText.trim().substring(0, 200),
+                                retryAfter: retryMatch ? retryMatch[1] : null
+                            };
+                            break;
+                        }
+                    }
+                    if (limitInfo) break;
+                }
+
+                // Also check if the response text itself mentions limits
+                var lowerText = newText.toLowerCase();
+                if (!limitInfo && (
+                    lowerText.includes("you've reached") || lowerText.includes('usage limit') ||
+                    lowerText.includes('rate limit') || lowerText.includes('too many requests') ||
+                    lowerText.includes("you've used all") || lowerText.includes('quota exceeded') ||
+                    lowerText.includes('please try again later') || lowerText.includes('temporarily unavailable') ||
+                    lowerText.includes("i can't help with that right now"))) {
+                    var retryMatch = lowerText.match(/(?:try again|wait|in)\s+(?:about\s+)?(\d+\s*(?:minute|hour|second|min|hr|sec)s?)/i);
+                    limitInfo = {
+                        message: newText.substring(0, 200),
+                        retryAfter: retryMatch ? retryMatch[1] : null
+                    };
+                }
+
+                return JSON.stringify({done: true, text: newText, codeBlocks: newCodeBlocks, limitInfo: limitInfo});
             })()
             """;
 
@@ -436,7 +478,19 @@ public class BrowserBridge : IDisposable
                                             codeBlocks.Add(new CodeBlock(lang, code));
                                     }
                                 }
-                                return new GeminiResponse(responseText, codeBlocks);
+
+                                // Extract limit info if present
+                                LimitInfo? limitInfo = null;
+                                if (doc.RootElement.TryGetProperty("limitInfo", out var limEl) &&
+                                    limEl.ValueKind == JsonValueKind.Object)
+                                {
+                                    var limMsg = limEl.GetProperty("message").GetString() ?? "Usage limit reached";
+                                    var limRetry = limEl.TryGetProperty("retryAfter", out var ra) &&
+                                                   ra.ValueKind == JsonValueKind.String ? ra.GetString() : null;
+                                    limitInfo = new LimitInfo(limMsg, limRetry, null);
+                                }
+
+                                return new GeminiResponse(responseText, codeBlocks, limitInfo);
                             }
                         }
                         else
@@ -452,6 +506,68 @@ public class BrowserBridge : IDisposable
             await Task.Delay(1000, cts.Token);
         }
 
+        return null;
+    }
+
+    /// <summary>Check if a usage limit banner/overlay is currently showing on the page.</summary>
+    public async Task<LimitInfo?> CheckForLimitAsync()
+    {
+        var script = """
+            (function() {
+                var selectors = [
+                    '[class*="limit"]', '[class*="error-message"]', '[class*="rate-limit"]',
+                    '[class*="quota"]', '[class*="warning-banner"]', '[class*="snackbar"]',
+                    '[class*="toast"]', '[role="alert"]', '[class*="error-container"]',
+                    '[class*="blocked"]', '[class*="unavailable"]'
+                ];
+                for (var s = 0; s < selectors.length; s++) {
+                    var els = document.querySelectorAll(selectors[s]);
+                    for (var e = 0; e < els.length; e++) {
+                        var t = (els[e].innerText || '').toLowerCase();
+                        if (t.includes('limit') || t.includes('quota') || t.includes('too many') ||
+                            t.includes('try again') || t.includes('rate limit') || t.includes('exceeded') ||
+                            t.includes('wait') || t.includes('unavailable') || t.includes('capacity')) {
+                            var retryMatch = t.match(/(?:try again|wait|in)\s+(?:about\s+)?(\d+\s*(?:minute|hour|second|min|hr|sec)s?)/i);
+                            return JSON.stringify({
+                                found: true,
+                                message: els[e].innerText.trim().substring(0, 300),
+                                retryAfter: retryMatch ? retryMatch[1] : null
+                            });
+                        }
+                    }
+                }
+
+                // Also check if the send button is disabled with a limit-related tooltip
+                var sendBtn = document.querySelector('button[aria-label*="Send"]');
+                if (sendBtn && sendBtn.disabled) {
+                    var tip = sendBtn.getAttribute('mattooltip') || sendBtn.getAttribute('title') || '';
+                    if (tip.toLowerCase().includes('limit') || tip.toLowerCase().includes('wait')) {
+                        return JSON.stringify({found: true, message: tip, retryAfter: null});
+                    }
+                }
+
+                return JSON.stringify({found: false});
+            })()
+            """;
+
+        try
+        {
+            var result = await InvokeOnStaAsync(() =>
+                _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+            var unescaped = JsonSerializer.Deserialize<string>(result);
+            if (unescaped != null)
+            {
+                using var doc = JsonDocument.Parse(unescaped);
+                if (doc.RootElement.GetProperty("found").GetBoolean())
+                {
+                    var msg = doc.RootElement.GetProperty("message").GetString() ?? "Usage limit detected";
+                    var retry = doc.RootElement.TryGetProperty("retryAfter", out var ra) &&
+                                ra.ValueKind == JsonValueKind.String ? ra.GetString() : null;
+                    return new LimitInfo(msg, retry, null);
+                }
+            }
+        }
+        catch { }
         return null;
     }
 
