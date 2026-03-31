@@ -169,7 +169,18 @@ public class CliEngine
     private static string? ReadInput()
     {
         var lines = new List<string>();
-        var line = Console.ReadLine();
+        string? line;
+
+        // Use tab-completing reader when terminal supports it, fallback otherwise
+        try
+        {
+            line = InputReader.ReadLine();
+        }
+        catch
+        {
+            // Fallback for piped input / non-interactive terminals
+            line = Console.ReadLine();
+        }
 
         if (line == null) return null;
 
@@ -191,7 +202,8 @@ public class CliEngine
         {
             lines.Add(line[..^1]);
             Console.Write($"{AnsiHelper.Gray}  ...{AnsiHelper.Reset} ");
-            line = Console.ReadLine();
+            try { line = InputReader.ReadLine(); }
+            catch { line = Console.ReadLine(); }
             if (line == null) break;
         }
 

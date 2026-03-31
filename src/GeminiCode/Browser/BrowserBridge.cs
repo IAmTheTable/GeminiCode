@@ -465,6 +465,8 @@ public class BrowserBridge : IDisposable
             })()
             """;
         await InvokeOnStaAsync(() => _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
+        // Give the page a moment to start transitioning before settle detection
+        await Task.Delay(500);
     }
 
     public void BringToFront()
@@ -510,8 +512,8 @@ public class BrowserBridge : IDisposable
         var openResult = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(openScript));
 
-        // Wait for menu to appear
-        await Task.Delay(500);
+        // Wait for menu animation
+        await Task.Delay(800);
 
         // Step 2: Find and click the menu item matching the mode name
         var escapedMode = JsonSerializer.Serialize(modeName.ToLowerInvariant());
@@ -543,8 +545,73 @@ public class BrowserBridge : IDisposable
         var selectResult = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(selectScript));
 
+        // Wait for model switch to settle — Gemini reloads the UI
+        await WaitForPageSettleAsync();
+
         try { return JsonSerializer.Deserialize<string>(selectResult) ?? selectResult; }
         catch { return selectResult; }
+    }
+
+    /// <summary>Wait for the Gemini page to stabilize after a navigation/model switch.</summary>
+    public async Task WaitForPageSettleAsync(int maxWaitMs = 8000)
+    {
+        // Poll until the chat input is available and the page stops changing
+        var startTime = Environment.TickCount64;
+        string? lastState = null;
+        int stableCount = 0;
+
+        while (Environment.TickCount64 - startTime < maxWaitMs)
+        {
+            await Task.Delay(500);
+
+            try
+            {
+                var stateScript = $$"""
+                    (function() {
+                        var input = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
+                        var btn = document.querySelector("{{EscapeJs(_selectors.SendButton)}}");
+                        var loading = document.querySelector('[class*="loading"], [class*="spinner"], .progress-indicator');
+                        return JSON.stringify({
+                            hasInput: !!input,
+                            hasButton: !!btn,
+                            isLoading: !!loading,
+                            url: window.location.href.substring(0, 60)
+                        });
+                    })()
+                    """;
+                var result = await InvokeOnStaAsync(() =>
+                    _window!.WebView.CoreWebView2.ExecuteScriptAsync(stateScript));
+
+                var unescaped = JsonSerializer.Deserialize<string>(result);
+                if (unescaped != null)
+                {
+                    using var doc = JsonDocument.Parse(unescaped);
+                    var hasInput = doc.RootElement.GetProperty("hasInput").GetBoolean();
+                    var isLoading = doc.RootElement.GetProperty("isLoading").GetBoolean();
+
+                    // Page settled: input available and not loading
+                    if (hasInput && !isLoading)
+                    {
+                        if (unescaped == lastState)
+                        {
+                            stableCount++;
+                            if (stableCount >= 2) return; // 2 stable polls = settled
+                        }
+                        else
+                        {
+                            lastState = unescaped;
+                            stableCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        stableCount = 0;
+                        lastState = null;
+                    }
+                }
+            }
+            catch { }
+        }
     }
 
     /// <summary>Gets the currently selected model mode using multiple detection strategies.</summary>

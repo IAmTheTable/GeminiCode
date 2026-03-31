@@ -106,8 +106,10 @@ public class CommandHandler
     private async Task HandleNewChatAsync()
     {
         await _browser.StartNewChatAsync();
+        Console.Write($"{AnsiHelper.Dim}Waiting for page to load...{AnsiHelper.Reset}");
+        await _browser.WaitForPageSettleAsync();
         _conversation.Reset();
-        Console.WriteLine("New conversation started.");
+        Console.WriteLine($"\r{AnsiHelper.Green}New conversation started.        {AnsiHelper.Reset}");
     }
 
     private void PrintAllowlist()
