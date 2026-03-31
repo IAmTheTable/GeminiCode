@@ -44,6 +44,9 @@ public class Program
         toolRegistry.Register(new ListFilesTool(sandbox));
         toolRegistry.Register(new SearchFilesTool(sandbox));
         toolRegistry.Register(new RunCommandTool(sandbox));
+        toolRegistry.Register(new GrepTool(sandbox));
+        toolRegistry.Register(new TreeTool(sandbox));
+        toolRegistry.Register(new GitInfoTool(sandbox));
 
         // Initialize permissions
         var allowlist = new SessionAllowlist();
@@ -114,9 +117,10 @@ public class Program
         var conversation = new ConversationManager();
         var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox);
 
-        // Initialize CLI
+        // Initialize context processor and CLI
+        var contextProcessor = new ContextProcessor(sandbox);
         var commands = new CommandHandler(browser, conversation, allowlist, sandbox);
-        var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate);
+        var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works
         orchestrator.FileSaved += path => cli.NotifyFileSaved(path);

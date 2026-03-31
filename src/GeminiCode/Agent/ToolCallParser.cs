@@ -20,10 +20,13 @@ public static class ToolCallParser
 
     // Function-call format: tool_name(param="value", ...)
     // Matches: write_file(path="...", content="...") etc.
-    private static readonly string[] KnownTools = ["write_file", "read_file", "edit_file", "list_files", "search_files", "run_command"];
+    private static readonly string[] KnownTools = [
+        "write_file", "read_file", "edit_file", "list_files", "search_files",
+        "run_command", "grep", "tree", "git_info", "git_status"
+    ];
 
     private static readonly Regex FuncCallPattern = new(
-        @"(?:^|\n)\s*(write_file|read_file|edit_file|list_files|search_files|run_command|execute_shell|execute_command|save_file)\s*\((.*?)\)\s*(?:$|\n)",
+        @"(?:^|\n)\s*(write_file|read_file|edit_file|list_files|search_files|run_command|execute_shell|execute_command|save_file|grep|grep_search|tree|directory_tree|git_info|git_status|git_diff|git_log)\s*\((.*?)\)\s*(?:$|\n)",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.Multiline);
 
     // Map function names (including common aliases Gemini uses) to our tool names
@@ -38,6 +41,14 @@ public static class ToolCallParser
         ["run_command"] = "RunCommand",
         ["execute_shell"] = "RunCommand",
         ["execute_command"] = "RunCommand",
+        ["grep"] = "Grep",
+        ["grep_search"] = "Grep",
+        ["tree"] = "Tree",
+        ["directory_tree"] = "Tree",
+        ["git_info"] = "GitInfo",
+        ["git_status"] = "GitInfo",
+        ["git_diff"] = "GitInfo",
+        ["git_log"] = "GitInfo",
     };
 
     // Tag-based patterns: [FILE:name]...[/FILE], [RUN]...[/RUN], etc.
@@ -50,8 +61,9 @@ public static class ToolCallParser
         @"\[\s*RUN\s*\](.*?)\[\s*/\s*RUN\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // [READ]path[/READ] or [READ:10-50]path[/READ]
     private static readonly Regex ReadTagPattern = new(
-        @"\[\s*READ\s*\](.*?)\[\s*/\s*READ\s*\]",
+        @"\[\s*READ\s*(?::\s*(\d+)\s*(?:-\s*(\d+))?\s*)?\](.*?)\[\s*/\s*READ\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex ListTagPattern = new(
@@ -60,6 +72,26 @@ public static class ToolCallParser
 
     private static readonly Regex SearchTagPattern = new(
         @"\[\s*SEARCH\s*\](.*?)\[\s*/\s*SEARCH\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [EDIT:path]old_string>>>...<<<new_string>>>...<<<[/EDIT]
+    private static readonly Regex EditTagPattern = new(
+        @"\[\s*EDIT\s*:\s*([^\]]+?)\s*\]\s*\n\s*old_string>>>([\s\S]*?)<<<\s*\n\s*new_string>>>([\s\S]*?)<<<\s*\n\s*\[\s*/\s*EDIT\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [GREP]pattern[/GREP] or [GREP:include=*.cs,context=3]pattern[/GREP]
+    private static readonly Regex GrepTagPattern = new(
+        @"\[\s*GREP\s*(?::\s*([^\]]*?)\s*)?\](.*?)\[\s*/\s*GREP\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [TREE][/TREE] or [TREE:depth=3]path[/TREE]
+    private static readonly Regex TreeTagPattern = new(
+        @"\[\s*TREE\s*(?::\s*([^\]]*?)\s*)?\](.*?)\[\s*/\s*TREE\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [GIT]subcommand args[/GIT]
+    private static readonly Regex GitTagPattern = new(
+        @"\[\s*GIT\s*\](.*?)\[\s*/\s*GIT\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static ParseResult Parse(string responseText)
@@ -75,6 +107,16 @@ public static class ToolCallParser
             return "";
         });
 
+        // [EDIT:path]old_string>>>...<<<new_string>>>...<<<[/EDIT]
+        textContent = EditTagPattern.Replace(textContent, m =>
+        {
+            var path = m.Groups[1].Value.Trim();
+            var oldStr = m.Groups[2].Value.Trim();
+            var newStr = m.Groups[3].Value.Trim();
+            toolCalls.Add(MakeToolCall("EditFile", new() { ["path"] = path, ["old_string"] = oldStr, ["new_string"] = newStr }));
+            return "";
+        });
+
         textContent = RunTagPattern.Replace(textContent, m =>
         {
             var command = m.Groups[1].Value.Trim();
@@ -82,10 +124,43 @@ public static class ToolCallParser
             return "";
         });
 
+        // [READ]path[/READ] or [READ:10-50]path[/READ]
         textContent = ReadTagPattern.Replace(textContent, m =>
         {
-            var path = m.Groups[1].Value.Trim();
-            toolCalls.Add(MakeToolCall("ReadFile", new() { ["path"] = path }));
+            var startLine = m.Groups[1].Value;
+            var endLine = m.Groups[2].Value;
+            var path = m.Groups[3].Value.Trim();
+            var readParams = new Dictionary<string, string> { ["path"] = path };
+            if (!string.IsNullOrEmpty(startLine))
+            {
+                readParams["offset"] = startLine;
+                if (!string.IsNullOrEmpty(endLine))
+                {
+                    var start = int.Parse(startLine);
+                    var end = int.Parse(endLine);
+                    readParams["limit"] = (end - start + 1).ToString();
+                }
+            }
+            toolCalls.Add(MakeToolCall("ReadFile", readParams));
+            return "";
+        });
+
+        // [GREP:include=*.cs,context=3]pattern[/GREP]
+        textContent = GrepTagPattern.Replace(textContent, m =>
+        {
+            var opts = m.Groups[1].Value.Trim();
+            var pattern = m.Groups[2].Value.Trim();
+            var grepParams = new Dictionary<string, string> { ["pattern"] = pattern };
+            if (!string.IsNullOrEmpty(opts))
+            {
+                foreach (var opt in opts.Split(','))
+                {
+                    var kv = opt.Split('=', 2);
+                    if (kv.Length == 2)
+                        grepParams[kv[0].Trim()] = kv[1].Trim();
+                }
+            }
+            toolCalls.Add(MakeToolCall("Grep", grepParams));
             return "";
         });
 
@@ -100,6 +175,39 @@ public static class ToolCallParser
         {
             var pattern = m.Groups[1].Value.Trim();
             toolCalls.Add(MakeToolCall("SearchFiles", new() { ["pattern"] = pattern }));
+            return "";
+        });
+
+        // [TREE][/TREE] or [TREE:depth=3]path[/TREE]
+        textContent = TreeTagPattern.Replace(textContent, m =>
+        {
+            var opts = m.Groups[1].Value.Trim();
+            var path = m.Groups[2].Value.Trim();
+            var treeParams = new Dictionary<string, string>();
+            if (!string.IsNullOrEmpty(path))
+                treeParams["path"] = path;
+            if (!string.IsNullOrEmpty(opts))
+            {
+                foreach (var opt in opts.Split(','))
+                {
+                    var kv = opt.Split('=', 2);
+                    if (kv.Length == 2)
+                        treeParams[kv[0].Trim()] = kv[1].Trim();
+                }
+            }
+            toolCalls.Add(MakeToolCall("Tree", treeParams));
+            return "";
+        });
+
+        // [GIT]subcommand args[/GIT]
+        textContent = GitTagPattern.Replace(textContent, m =>
+        {
+            var gitCmd = m.Groups[1].Value.Trim();
+            var parts = gitCmd.Split(' ', 2);
+            var gitParams = new Dictionary<string, string> { ["subcommand"] = parts[0] };
+            if (parts.Length > 1)
+                gitParams["args"] = parts[1];
+            toolCalls.Add(MakeToolCall("GitInfo", gitParams));
             return "";
         });
 
@@ -155,14 +263,29 @@ public static class ToolCallParser
         return new ParseResult(toolCalls, textContent);
     }
 
+    // Numeric parameter names — these get serialized as JSON numbers, not strings
+    private static readonly HashSet<string> NumericParams = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "offset", "limit", "depth", "context", "timeout_ms"
+    };
+
     /// <summary>Helper to create a ParsedToolCall from string parameters.</summary>
     private static ParsedToolCall MakeToolCall(string name, Dictionary<string, string> stringParams)
     {
         var jsonParams = new Dictionary<string, JsonElement>();
         foreach (var kv in stringParams)
         {
-            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(kv.Value));
-            jsonParams[kv.Key] = doc.RootElement.Clone();
+            // Serialize numeric params as actual numbers so tools can check ValueKind == Number
+            if (NumericParams.Contains(kv.Key) && int.TryParse(kv.Value, out var numVal))
+            {
+                using var doc = JsonDocument.Parse(numVal.ToString());
+                jsonParams[kv.Key] = doc.RootElement.Clone();
+            }
+            else
+            {
+                using var doc = JsonDocument.Parse(JsonSerializer.Serialize(kv.Value));
+                jsonParams[kv.Key] = doc.RootElement.Clone();
+            }
         }
         return new ParsedToolCall(name, jsonParams);
     }

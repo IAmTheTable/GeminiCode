@@ -486,20 +486,90 @@ public class BrowserBridge : IDisposable
         catch { return selectResult; }
     }
 
-    /// <summary>Gets the currently selected model mode.</summary>
+    /// <summary>Gets the currently selected model mode using multiple detection strategies.</summary>
     public async Task<string> GetCurrentModelAsync()
     {
         var script = """
             (function() {
+                // Strategy 1: Mode menu button (most reliable)
                 var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
-                if (!btn) return 'unknown';
-                return (btn.innerText || btn.textContent || 'unknown').trim();
+                if (btn) {
+                    var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                    if (text) return text;
+                }
+
+                // Strategy 2: Look for active/selected mode indicator in UI
+                var activeItems = document.querySelectorAll(
+                    '[aria-selected="true"][role="tab"], [aria-checked="true"][role="menuitemradio"], ' +
+                    '[class*="selected"][class*="mode"], [class*="active"][class*="model"], ' +
+                    '[class*="selected"][class*="model"], .mdc-chip--selected'
+                );
+                for (var i = 0; i < activeItems.length; i++) {
+                    var text = (activeItems[i].innerText || '').trim().toLowerCase();
+                    if (text && (text.includes('flash') || text.includes('pro') || text.includes('thinking') ||
+                        text.includes('2.5') || text.includes('2.0') || text.includes('deep'))) {
+                        return text;
+                    }
+                }
+
+                // Strategy 3: Scan for model name near the top of the page (chips, headers)
+                var chips = document.querySelectorAll(
+                    '[class*="chip"], [class*="badge"], [class*="model-name"], [class*="mode-label"], ' +
+                    '[class*="model-indicator"], [class*="mode-indicator"]'
+                );
+                for (var i = 0; i < chips.length; i++) {
+                    var text = (chips[i].innerText || '').trim().toLowerCase();
+                    if (text.includes('flash') || text.includes('pro') || text.includes('thinking') || text.includes('deep')) {
+                        return text;
+                    }
+                }
+
+                // Strategy 4: Look in the page title or URL
+                var title = document.title.toLowerCase();
+                if (title.includes('flash')) return 'flash';
+                if (title.includes('thinking')) return 'thinking';
+                if (title.includes('deep')) return 'deep think';
+                if (title.includes('pro')) return 'pro';
+
+                return 'unknown';
             })()
             """;
         var result = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(script));
-        try { return JsonSerializer.Deserialize<string>(result) ?? result; }
-        catch { return result; }
+        try
+        {
+            var raw = JsonSerializer.Deserialize<string>(result) ?? result;
+            return NormalizeModelName(raw);
+        }
+        catch { return "unknown"; }
+    }
+
+    /// <summary>Normalizes messy DOM text into a clean model identifier.</summary>
+    public static string NormalizeModelName(string rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText)) return "unknown";
+
+        var lower = rawText.ToLowerInvariant().Trim();
+
+        // Remove common noise from DOM text
+        lower = lower.Replace("gemini", "").Replace("google", "").Replace("mode", "").Trim();
+
+        // Match known models (order matters — check more specific first)
+        if (lower.Contains("deep") && (lower.Contains("think") || lower.Contains("research"))) return "Deep Think";
+        if (lower.Contains("thinking")) return "Thinking";
+        if (lower.Contains("flash")) return "Flash";
+        if (lower.Contains("pro")) return "Pro";
+        if (lower.Contains("ultra")) return "Ultra";
+        if (lower.Contains("nano")) return "Nano";
+        if (lower.Contains("exp")) return "Experimental";
+
+        // If it contains a version number, include it
+        if (lower.Contains("2.5")) return rawText.Trim();
+        if (lower.Contains("2.0")) return rawText.Trim();
+
+        // Fall back to cleaned raw text
+        var cleaned = rawText.Trim();
+        return string.IsNullOrWhiteSpace(cleaned) ? "unknown" : cleaned;
     }
 
     /// <summary>Discovers model selector elements in the Gemini UI.</summary>

@@ -80,7 +80,7 @@ public class CommandHandler
     private void PrintHelp()
     {
         Console.WriteLine($"""
-            {AnsiHelper.Bold}Available commands:{AnsiHelper.Reset}
+            {AnsiHelper.Bold}Commands:{AnsiHelper.Reset}
               /help            — Show this help
               /clear           — Clear terminal
               /new             — Start a new Gemini conversation
@@ -90,7 +90,16 @@ public class CommandHandler
               /allowlist       — Show current session allowlist
               /status          — Show session state
               /cd <path>       — Change working directory
+              /paste           — Multi-line paste mode
               /exit            — Quit GeminiCode
+
+            {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
+            {Agent.ContextProcessor.GetHelpText()}
+            {AnsiHelper.Bold}Examples:{AnsiHelper.Reset}
+              > fix the bug in @file src/App.cs
+              > explain @file src/App.cs:10-30
+              > what changed? @diff
+              > refactor @grep "TODO" include=*.cs
             """);
     }
 
@@ -118,10 +127,16 @@ public class CommandHandler
     {
         var authCheck = await _browser.CheckAuthenticatedAsync();
         var model = await _browser.GetCurrentModelAsync();
+        var trackedModel = _conversation.CurrentModel ?? "not yet detected";
+        var startModel = _conversation.SessionStartModel;
+        var switchCount = _conversation.ModelSwitchCount;
+
         Console.WriteLine($"""
             {AnsiHelper.Bold}Status:{AnsiHelper.Reset}
               Auth:       {(authCheck ? $"{AnsiHelper.Green}Authenticated{AnsiHelper.Reset}" : $"{AnsiHelper.Red}Not authenticated{AnsiHelper.Reset}")}
               Model:      {AnsiHelper.Bold}{model}{AnsiHelper.Reset}
+              Tracked:    {trackedModel}{(startModel != null && trackedModel != startModel ? $" (started as {startModel})" : "")}
+              Switches:   {switchCount}
               Work dir:   {_sandbox.WorkingDirectory}
               Turns:      {_conversation.TurnCount}
               Allowlist:  {_allowlist.GetEntries().Count} tools auto-approved

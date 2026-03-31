@@ -15,16 +15,18 @@ public class CliEngine
     private readonly BrowserBridge _browser;
     private readonly ToolRegistry _tools;
     private readonly PermissionGate _permissionGate;
+    private readonly ContextProcessor _contextProcessor;
     private string? _lastSavedFile;
 
     public CliEngine(AgentOrchestrator orchestrator, CommandHandler commands, BrowserBridge browser,
-        ToolRegistry tools, PermissionGate permissionGate)
+        ToolRegistry tools, PermissionGate permissionGate, ContextProcessor contextProcessor)
     {
         _orchestrator = orchestrator;
         _commands = commands;
         _browser = browser;
         _tools = tools;
         _permissionGate = permissionGate;
+        _contextProcessor = contextProcessor;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -56,6 +58,14 @@ public class CliEngine
             {
                 Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
                 continue;
+            }
+
+            // Process @context references
+            var (expandedInput, contextCount) = _contextProcessor.Process(input);
+            if (contextCount > 0)
+            {
+                Console.WriteLine($"{AnsiHelper.Cyan}Attached {contextCount} context(s){AnsiHelper.Reset}");
+                input = expandedInput;
             }
 
             // Send to Gemini

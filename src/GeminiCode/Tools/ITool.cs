@@ -6,7 +6,7 @@ public record ToolResult(string Name, bool Success, string Output)
 {
     public string ToProtocolString()
     {
-        var truncated = Output.Length > 2000 ? Output[..2000] + "\n[truncated]" : Output;
+        var truncated = Output.Length > 8000 ? Output[..8000] + "\n[truncated]" : Output;
         return Success
             ? $"tool_result({Name}): {truncated}"
             : $"tool_error({Name}): {truncated}";

@@ -43,6 +43,15 @@ public class AgentOrchestrator
         if (!_conversation.IsFirstMessage)
             return true;
 
+        // Detect starting model
+        try
+        {
+            var startModel = await _browser.GetCurrentModelAsync();
+            _conversation.UpdateModel(startModel);
+            Console.WriteLine($"{AnsiHelper.Dim}Model: {startModel}{AnsiHelper.Reset}");
+        }
+        catch { }
+
         Console.WriteLine($"{AnsiHelper.Dim}Initializing agent session...{AnsiHelper.Reset}");
         var initBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(SystemPrompt.GenerateTemplate(_sandbox.WorkingDirectory));
@@ -68,6 +77,9 @@ public class AgentOrchestrator
                 return null;
         }
 
+        // Check model before sending
+        await DetectModelChangeAsync("pre-send");
+
         var message = _conversation.PrepareMessage(userMessage);
 
         // Capture baseline BEFORE sending so we can detect only NEW content
@@ -81,7 +93,75 @@ public class AgentOrchestrator
             return null;
         }
 
-        return await ProcessResponseAsync(response, ct);
+        // Check model after response — Gemini may have switched mid-conversation
+        var modelChanged = await DetectModelChangeAsync("post-response");
+
+        var result = await ProcessResponseAsync(response, ct);
+
+        // If model switched, send a re-orientation message so the new model knows the rules
+        if (modelChanged)
+            await ReorientAfterModelSwitchAsync(ct);
+
+        return result;
+    }
+
+    /// <summary>Detect model changes and notify user. Returns true if model changed.</summary>
+    private async Task<bool> DetectModelChangeAsync(string context)
+    {
+        try
+        {
+            var detectedModel = await _browser.GetCurrentModelAsync();
+            var change = _conversation.UpdateModel(detectedModel);
+
+            if (change != null)
+            {
+                Console.WriteLine($"\n{AnsiHelper.Yellow}Model switched: {change.PreviousModel} → {change.NewModel}{AnsiHelper.Reset}");
+
+                if (change.TotalSwitches >= 3)
+                    Console.WriteLine($"{AnsiHelper.Dim}(Model has switched {change.TotalSwitches} times this session — consider pinning a model with /model){AnsiHelper.Reset}");
+
+                return true;
+            }
+        }
+        catch { /* Model detection is best-effort */ }
+
+        return false;
+    }
+
+    /// <summary>
+    /// After a model switch, send a condensed system context so the new model knows the rules.
+    /// This is lighter than the full system prompt — just the essentials.
+    /// </summary>
+    private async Task ReorientAfterModelSwitchAsync(CancellationToken ct)
+    {
+        var reorientation = $"""
+            (SYSTEM: Model switch detected. You are in GeminiCode — an automated coding environment.
+            Working directory: {_sandbox.WorkingDirectory.Replace("\\", "/")}
+
+            Use these action tags in your responses — the build system executes them:
+            - [FILE:path]content[/FILE] — create/overwrite files
+            - [EDIT:path]old_string>>>...<<<new_string>>>...<<<[/EDIT] — surgical edits
+            - [RUN]command[/RUN] — run shell commands (Windows cmd.exe)
+            - [READ]path[/READ] or [READ:10-50]path[/READ] — read files
+            - [GREP:include=*.cs]pattern[/GREP] — search code
+            - [TREE][/TREE] — directory tree
+            - [GIT]status[/GIT] — git info
+
+            NEVER use markdown code blocks for code. Always use [FILE:] or [EDIT:] tags.
+            Results come back as tool_result(Name): output. Continue the current task.)
+            """;
+
+        Console.WriteLine($"{AnsiHelper.Dim}Re-sending context to new model...{AnsiHelper.Reset}");
+
+        var baseline = await _browser.CaptureBaselineAsync();
+        await _browser.SendMessageAsync(reorientation);
+
+        // Wait for acknowledgment but don't process it — it's just a system message
+        var ack = await _browser.WaitForResponseAsync(30, ct, baseline.textLen, baseline.preCount);
+        if (ack != null)
+            Console.WriteLine($"{AnsiHelper.Green}New model oriented.{AnsiHelper.Reset}");
+        else
+            Console.WriteLine($"{AnsiHelper.Yellow}Model re-orientation timed out — responses may not use action tags.{AnsiHelper.Reset}");
     }
 
     // Track code blocks we've already shown to avoid re-showing on follow-up messages
