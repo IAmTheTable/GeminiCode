@@ -262,13 +262,38 @@ public class BrowserBridge : IDisposable
     /// <summary>Capture the current page state so WaitForResponseAsync can detect new content.</summary>
     public async Task<(int textLen, int preCount)> CaptureBaselineAsync()
     {
+        // Uses the same whitespace-preserving extraction as WaitForResponseAsync
+        // so baseline length is consistent with response extraction.
         var script = """
             (function() {
                 var main = document.querySelector('[class*="chat-container"]')
                     || document.querySelector('.content-container')
                     || document.querySelector('.main-content');
                 if (!main) return JSON.stringify({textLen: 0, preCount: 0});
-                var textLen = (main.innerText || '').length;
+
+                function extractText(el) {
+                    var parts = [];
+                    var children = el.childNodes;
+                    for (var i = 0; i < children.length; i++) {
+                        var node = children[i];
+                        if (node.nodeType === 3) { parts.push(node.textContent); }
+                        else if (node.nodeType === 1) {
+                            var tag = node.tagName;
+                            if (tag === 'PRE' || tag === 'CODE') {
+                                var codeEl = node.querySelector('code') || node;
+                                parts.push(codeEl.textContent);
+                            } else if (tag === 'BR') { parts.push('\n'); }
+                            else if (tag === 'P' || tag === 'DIV' || tag === 'LI' ||
+                                     tag === 'H1' || tag === 'H2' || tag === 'H3' ||
+                                     tag === 'H4' || tag === 'H5' || tag === 'H6') {
+                                parts.push('\n'); parts.push(extractText(node)); parts.push('\n');
+                            } else { parts.push(extractText(node)); }
+                        }
+                    }
+                    return parts.join('');
+                }
+
+                var textLen = extractText(main).length;
                 var preCount = main.querySelectorAll('pre').length;
                 return JSON.stringify({textLen: textLen, preCount: preCount});
             })()
@@ -295,6 +320,8 @@ public class BrowserBridge : IDisposable
         cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
         // Step 2: Build poll script that uses baseline to extract only NEW content
+        // CRITICAL: Uses whitespace-preserving extraction for <pre> blocks
+        // so that Python/YAML indentation survives the DOM → text conversion.
         var pollScript = $$"""
             (function() {
                 var baseTextLen = {{baselineTextLen}};
@@ -305,11 +332,45 @@ public class BrowserBridge : IDisposable
                     || document.querySelector('.main-content');
                 if (!main) return JSON.stringify({done: false, reason: 'no_main'});
 
-                var fullText = main.innerText || '';
+                // Whitespace-preserving text extraction:
+                // innerText collapses whitespace in non-<pre> elements, destroying
+                // Python/YAML indentation. This function preserves <pre> content exactly.
+                function extractText(el) {
+                    var parts = [];
+                    var children = el.childNodes;
+                    for (var i = 0; i < children.length; i++) {
+                        var node = children[i];
+                        if (node.nodeType === 3) {
+                            // Text node — use as-is
+                            parts.push(node.textContent);
+                        } else if (node.nodeType === 1) {
+                            // Element node
+                            var tag = node.tagName;
+                            if (tag === 'PRE' || tag === 'CODE') {
+                                // Preserve exact whitespace from code elements
+                                var codeEl = node.querySelector('code') || node;
+                                parts.push(codeEl.textContent);
+                            } else if (tag === 'BR') {
+                                parts.push('\n');
+                            } else if (tag === 'P' || tag === 'DIV' || tag === 'LI' ||
+                                       tag === 'H1' || tag === 'H2' || tag === 'H3' ||
+                                       tag === 'H4' || tag === 'H5' || tag === 'H6') {
+                                // Block elements: recurse + add newlines
+                                parts.push('\n');
+                                parts.push(extractText(node));
+                                parts.push('\n');
+                            } else {
+                                // Inline element: recurse
+                                parts.push(extractText(node));
+                            }
+                        }
+                    }
+                    return parts.join('');
+                }
+
+                var fullText = extractText(main);
 
                 // Only return NEW text (after baseline)
-                // Use a safety margin: back up 200 chars to avoid cutting into the response start
-                // (the user's message gets added to the DOM between baseline capture and response)
                 var safeStart = Math.max(0, baseTextLen - 200);
                 var newText = fullText.length > safeStart ? fullText.substring(safeStart).trim() : '';
                 if (!newText || newText.length < 5) return JSON.stringify({done: false, reason: 'no_new_text'});
@@ -319,11 +380,11 @@ public class BrowserBridge : IDisposable
                 var newCodeBlocks = [];
                 for (var i = basePreCount; i < allPres.length; i++) {
                     var el = allPres[i];
-                    var code = el.innerText || el.textContent || '';
+                    var codeEl = el.querySelector('code') || el;
+                    var code = codeEl.textContent || '';
                     if (code.trim().length > 20) {
                         var lang = '';
-                        var codeEl = el.querySelector('code');
-                        var classes = ((codeEl ? codeEl.className : '') + ' ' + el.className + ' ' + (el.getAttribute('data-lang') || '')).toLowerCase();
+                        var classes = ((codeEl.className || '') + ' ' + el.className + ' ' + (el.getAttribute('data-lang') || '')).toLowerCase();
                         var langMatch = classes.match(/language-(\w+)|lang-(\w+)|(\bpython\b|\bjavascript\b|\btypescript\b|\bcsharp\b|\bjava\b|\bcpp\b|\brust\b|\bgo\b|\bruby\b|\bphp\b|\bbash\b|\bshell\b)/);
                         if (langMatch) lang = langMatch[1] || langMatch[2] || langMatch[3] || '';
                         if (!lang && code.includes('import ') && (code.includes('def ') || code.includes('print('))) lang = 'python';

@@ -174,11 +174,14 @@ public class AgentOrchestrator
 
         var parsed = ToolCallParser.Parse(cleanText);
 
-        // Display conversational text
+        // ── Thinking / Conversational Text ──
         if (!string.IsNullOrWhiteSpace(parsed.TextContent))
         {
+            var label = parsed.ToolCalls.Count > 0 ? "Thinking" : "Response";
+            PrintSection(label, "magenta");
             var rendered = MarkdownRenderer.Render(parsed.TextContent);
             Console.Write(rendered);
+            Console.WriteLine();
         }
 
         // If text contained tool calls — execute them
@@ -207,7 +210,6 @@ public class AgentOrchestrator
         // Execute any tool calls found in code blocks
         if (toolCallsFromBlocks.Count > 0)
         {
-            Console.WriteLine($"\n{AnsiHelper.Cyan}Detected {toolCallsFromBlocks.Count} tool call(s) from Gemini.{AnsiHelper.Reset}");
             return await ExecuteToolCallsAsync(toolCallsFromBlocks, ct);
         }
 
@@ -224,20 +226,23 @@ public class AgentOrchestrator
         // Offer to save new code blocks as files
         if (newBlocks.Count > 0)
         {
-            Console.WriteLine($"\n{AnsiHelper.Yellow}Gemini showed {newBlocks.Count} code block(s). Save as files?{AnsiHelper.Reset}");
+            PrintSection($"Code Blocks ({newBlocks.Count})", "yellow");
 
             foreach (var block in newBlocks)
             {
                 var ext = GetExtensionForLanguage(block.Language);
                 var suggestedName = $"script{ext}";
 
-                Console.WriteLine($"\n{AnsiHelper.Cyan}--- Code Block ({(string.IsNullOrEmpty(block.Language) ? "detected" : block.Language)}) ---{AnsiHelper.Reset}");
+                var langLabel = string.IsNullOrEmpty(block.Language) ? "detected" : block.Language;
+                Console.WriteLine($"  {AnsiHelper.Dim}┌─ {langLabel} ─────────────────────{AnsiHelper.Reset}");
                 var codePreview = string.Join("\n", block.Code.Split('\n').Take(5));
-                Console.WriteLine(codePreview);
+                foreach (var line in codePreview.Split('\n'))
+                    Console.WriteLine($"  {AnsiHelper.Dim}│{AnsiHelper.Reset} {line}");
                 if (block.Code.Split('\n').Length > 5)
-                    Console.WriteLine($"{AnsiHelper.Dim}... ({block.Code.Split('\n').Length} lines total){AnsiHelper.Reset}");
+                    Console.WriteLine($"  {AnsiHelper.Dim}│ ... ({block.Code.Split('\n').Length} lines total){AnsiHelper.Reset}");
+                Console.WriteLine($"  {AnsiHelper.Dim}└─────────────────────────────{AnsiHelper.Reset}");
 
-                Console.Write($"\nSave as [{AnsiHelper.Bold}{suggestedName}{AnsiHelper.Reset}] (enter filename, 'y' for default, or 'n' to skip): ");
+                Console.Write($"  Save as [{AnsiHelper.Bold}{suggestedName}{AnsiHelper.Reset}] (filename / y / n): ");
                 var input = Console.ReadLine()?.Trim();
 
                 // Handle y/yes as accepting default name
@@ -262,7 +267,7 @@ public class AgentOrchestrator
                     {
                         var result = await writeTool.ExecuteAsync(writeParams, ct);
                         var color = result.Success ? AnsiHelper.Green : AnsiHelper.Red;
-                        Console.WriteLine($"{color}{result.Output}{AnsiHelper.Reset}");
+                        Console.WriteLine($"  {color}{result.Output}{AnsiHelper.Reset}");
                         if (result.Success)
                             FileSaved?.Invoke(input);
                     }
@@ -300,6 +305,18 @@ public class AgentOrchestrator
         // Strip "Code snippet" labels Gemini adds
         text = Regex.Replace(text, @"\nCode snippet\s*\n", "\n", RegexOptions.IgnoreCase);
 
+        // Strip conversation echo artifacts (Gemini UI leaks "You said" / "Gemini said" / prior turns)
+        text = Regex.Replace(text, @"(?:^|\n)\s*You said\s*\n[\s\S]*?(?=\n\s*Gemini said|\z)", "\n", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"(?:^|\n)\s*Gemini said\s*\n", "\n", RegexOptions.IgnoreCase);
+
+        // Strip leaked system prompt fragments
+        text = Regex.Replace(text, @"Reply with exactly ""Ready\."" to confirm.*$", "", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\nConfirm\s*\n", "\n", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^\s*Ready\.\s*$", "", RegexOptions.Multiline);
+
+        // Strip leaked tool_result/tool_error echoes (Gemini sometimes echoes these back)
+        text = Regex.Replace(text, @"(?:^|\n)\s*tool_(?:result|error)\(.*?\):.*$", "", RegexOptions.Multiline);
+
         // Clean up leftover punctuation fragments from removed boilerplate
         text = Regex.Replace(text, @"\n\s*and the\s*\n", "\n");
         text = Regex.Replace(text, @"\n\s*apply\.\s*\n", "\n");
@@ -312,6 +329,8 @@ public class AgentOrchestrator
 
     private async Task<string?> ExecuteToolCallsAsync(List<ParsedToolCall> toolCalls, CancellationToken ct)
     {
+        PrintSection($"Tools ({toolCalls.Count})", "cyan");
+
         var results = new List<string>();
 
         foreach (var toolCall in toolCalls)
@@ -319,27 +338,48 @@ public class AgentOrchestrator
             var tool = _tools.GetTool(toolCall.Name);
             if (tool == null)
             {
+                Console.WriteLine($"  {AnsiHelper.Red}✗ {toolCall.Name}: unknown tool{AnsiHelper.Reset}");
                 var result = new ToolResult(toolCall.Name, false, $"Unknown tool: {toolCall.Name}");
                 results.Add(result.ToProtocolString());
                 continue;
             }
 
+            // Show what tool is about to do
+            var action = tool.DescribeAction(toolCall.Parameters);
+            Console.Write($"  {AnsiHelper.Dim}▸ {action}{AnsiHelper.Reset}");
+
             var permission = _permissionGate.RequestPermission(tool, toolCall.Parameters);
 
             if (permission == PermissionResult.Denied)
             {
+                Console.WriteLine($" {AnsiHelper.Red}✗ denied{AnsiHelper.Reset}");
                 var result = new ToolResult(toolCall.Name, false, "Permission denied by user");
                 results.Add(result.ToProtocolString());
                 continue;
             }
 
             var toolResult = await tool.ExecuteAsync(toolCall.Parameters, ct);
-            var color = toolResult.Success ? AnsiHelper.Green : AnsiHelper.Red;
-            Console.WriteLine($"{color}{tool.Name}: {(toolResult.Success ? "OK" : "FAILED")}{AnsiHelper.Reset}");
+
+            if (toolResult.Success)
+            {
+                Console.WriteLine($" {AnsiHelper.Green}✓{AnsiHelper.Reset}");
+                // Show compact output preview for read-like tools
+                if (IsReadTool(tool.Name) && !string.IsNullOrWhiteSpace(toolResult.Output))
+                {
+                    var preview = GetOutputPreview(toolResult.Output, 6);
+                    Console.WriteLine($"{AnsiHelper.Dim}{preview}{AnsiHelper.Reset}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($" {AnsiHelper.Red}✗ {toolResult.Output.Split('\n')[0]}{AnsiHelper.Reset}");
+            }
+
             results.Add(toolResult.ToProtocolString());
         }
 
         // Send results back to Gemini
+        Console.WriteLine($"\n  {AnsiHelper.Dim}Sending results to Gemini...{AnsiHelper.Reset}");
         var combinedResults = _conversation.PrepareToolResults(results);
         var followBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(combinedResults);
@@ -348,6 +388,34 @@ public class AgentOrchestrator
         if (followUp == null) return null;
 
         return await ProcessResponseAsync(followUp, ct);
+    }
+
+    private static bool IsReadTool(string name) =>
+        name is "ReadFile" or "Grep" or "SearchFiles" or "ListFiles" or "Tree" or "GitInfo";
+
+    private static string GetOutputPreview(string output, int maxLines)
+    {
+        var lines = output.Split('\n');
+        var preview = string.Join("\n", lines.Take(maxLines).Select(l => $"    {l}"));
+        if (lines.Length > maxLines)
+            preview += $"\n    ... ({lines.Length} lines total)";
+        return preview;
+    }
+
+    /// <summary>Print a labeled section divider.</summary>
+    private static void PrintSection(string label, string color)
+    {
+        var colorCode = color switch
+        {
+            "cyan" => AnsiHelper.Cyan,
+            "magenta" => AnsiHelper.Magenta,
+            "yellow" => AnsiHelper.Yellow,
+            "green" => AnsiHelper.Green,
+            "red" => AnsiHelper.Red,
+            "blue" => AnsiHelper.Blue,
+            _ => AnsiHelper.Dim
+        };
+        Console.WriteLine($"\n{colorCode}── {label} {"─".PadRight(40, '─')}{AnsiHelper.Reset}");
     }
 
     private static string GetExtensionForLanguage(string lang) => lang.ToLowerInvariant() switch
