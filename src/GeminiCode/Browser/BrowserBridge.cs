@@ -266,8 +266,13 @@ public class BrowserBridge : IDisposable
         if (!File.Exists(filePath))
             return false;
 
+        // Reject files over 25 MB to prevent OOM from base64 encoding
+        var fileInfo = new FileInfo(filePath);
+        if (fileInfo.Length > 25 * 1024 * 1024)
+            return false;
+
         var fileName = Path.GetFileName(filePath);
-        var mimeType = GetMimeType(fileName);
+        var mimeType = EscapeJs(GetMimeType(fileName));
 
         // Read file as base64 for injection
         var bytes = await File.ReadAllBytesAsync(filePath);

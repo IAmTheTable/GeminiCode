@@ -238,6 +238,7 @@ public class CommandHandler
         }
 
         _sandbox.UpdateWorkingDirectory(resolved);
+        _profile.UpdateWorkingDirectory(resolved);
         _allowlist.Clear();
         Console.WriteLine($"Working directory changed to {resolved}. Allowlist cleared.");
     }
