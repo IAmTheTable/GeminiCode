@@ -13,19 +13,22 @@ public class CommandHandler
     private readonly SessionAllowlist _allowlist;
     private readonly PathSandbox _sandbox;
     private readonly AgentProfile _profile;
+    private readonly SessionContext _sessionContext;
 
     public CommandHandler(
         BrowserBridge browser,
         ConversationManager conversation,
         SessionAllowlist allowlist,
         PathSandbox sandbox,
-        AgentProfile profile)
+        AgentProfile profile,
+        SessionContext sessionContext)
     {
         _browser = browser;
         _conversation = conversation;
         _allowlist = allowlist;
         _sandbox = sandbox;
         _profile = profile;
+        _sessionContext = sessionContext;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
@@ -77,6 +80,15 @@ public class CommandHandler
             case "/agent":
                 await HandleAgentAsync(arg);
                 return true;
+            case "/save":
+                HandleSave();
+                return true;
+            case "/restore":
+                await HandleRestoreAsync();
+                return true;
+            case "/context":
+                HandleShowContext();
+                return true;
             case "/exit":
                 HandleExit();
                 return true;
@@ -102,6 +114,9 @@ public class CommandHandler
               /cd <path>       — Change working directory
               /paste           — Multi-line paste mode
               /agent [name]    — List or switch agent profiles
+              /save            — Save session context to .gemini/session-context.md
+              /restore         — Restore previous session context in new chat
+              /context         — Show current session context
               /exit            — Quit GeminiCode
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
@@ -272,6 +287,40 @@ public class CommandHandler
         await _browser.WaitForPageSettleAsync();
         _conversation.Reset();
         Console.WriteLine($"{AnsiHelper.Green}New conversation started with {arg} profile.{AnsiHelper.Reset}");
+    }
+
+    private void HandleSave()
+    {
+        _sessionContext.SaveToFile();
+        Console.WriteLine($"{AnsiHelper.Green}Session context saved to {_sessionContext.GetFilePath()}{AnsiHelper.Reset}");
+    }
+
+    private async Task HandleRestoreAsync()
+    {
+        var filePath = _sessionContext.GetFilePath();
+        if (!File.Exists(filePath))
+        {
+            Console.WriteLine($"{AnsiHelper.Yellow}No saved session context found at {filePath}{AnsiHelper.Reset}");
+            return;
+        }
+
+        // Start new chat
+        await _browser.StartNewChatAsync();
+        await _browser.WaitForPageSettleAsync();
+        _conversation.Reset();
+
+        // Send saved context as text message
+        Console.WriteLine($"{AnsiHelper.Dim}Restoring session context...{AnsiHelper.Reset}");
+        var content = File.ReadAllText(filePath);
+        await _browser.SendMessageAsync("Previous session context:\n\n" + content);
+
+        Console.WriteLine($"{AnsiHelper.Green}Session context restored. New chat initialized with previous context.{AnsiHelper.Reset}");
+    }
+
+    private void HandleShowContext()
+    {
+        var md = _sessionContext.GenerateMarkdown();
+        Console.WriteLine(md);
     }
 
     private void HandleExit()

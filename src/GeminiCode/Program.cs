@@ -118,11 +118,12 @@ public class Program
 
         // Initialize agent
         var conversation = new ConversationManager();
-        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile);
+        var sessionContext = new SessionContext(workDir, agentProfile.ActiveProfileName);
+        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext);
 
         // Initialize context processor and CLI
         var contextProcessor = new ContextProcessor(sandbox);
-        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile);
+        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext);
         var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works

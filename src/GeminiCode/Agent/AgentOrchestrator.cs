@@ -17,6 +17,7 @@ public class AgentOrchestrator
     private readonly AppSettings _settings;
     private readonly Tools.PathSandbox _sandbox;
     private readonly AgentProfile _profile;
+    private readonly SessionContext _sessionContext;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -29,7 +30,8 @@ public class AgentOrchestrator
         ConversationManager conversation,
         AppSettings settings,
         Tools.PathSandbox sandbox,
-        AgentProfile profile)
+        AgentProfile profile,
+        SessionContext sessionContext)
     {
         _browser = browser;
         _tools = tools;
@@ -38,6 +40,7 @@ public class AgentOrchestrator
         _settings = settings;
         _sandbox = sandbox;
         _profile = profile;
+        _sessionContext = sessionContext;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -231,6 +234,21 @@ public class AgentOrchestrator
             var rendered = MarkdownRenderer.Render(parsed.TextContent);
             Console.Write(rendered);
             Console.WriteLine();
+
+            // Auto-detect decisions in response text
+            if (parsed.TextContent != null)
+            {
+                var decisionPatterns = new[] { "decided ", "chose ", "going with ", "approach:", "decision:", "we'll use ", "selected " };
+                foreach (var line in parsed.TextContent.Split('\n'))
+                {
+                    var lower = line.ToLowerInvariant().Trim();
+                    if (decisionPatterns.Any(p => lower.Contains(p)) && line.Trim().Length > 20 && line.Trim().Length < 200)
+                    {
+                        _sessionContext.LogDecision(line.Trim());
+                        break;
+                    }
+                }
+            }
         }
 
         // If text contained tool calls — execute them
@@ -408,6 +426,18 @@ public class AgentOrchestrator
             }
 
             var toolResult = await tool.ExecuteAsync(toolCall.Parameters, ct);
+
+            // Log to session context
+            var target = toolCall.Parameters.TryGetValue("path", out var pathEl) ? pathEl.ToString() : toolCall.Name;
+            _sessionContext.LogToolCall(toolCall.Name, target, toolResult.Success, _conversation.TurnCount);
+
+            // Track file modifications
+            if (toolResult.Success && toolCall.Name is "WriteFile" or "EditFile")
+            {
+                var filePath = toolCall.Parameters.TryGetValue("path", out var p) ? p.GetString() ?? "" : "";
+                var desc = toolCall.Name == "WriteFile" ? "created/overwritten" : "edited";
+                _sessionContext.LogFileModified(filePath, desc);
+            }
 
             if (toolResult.Success)
             {
