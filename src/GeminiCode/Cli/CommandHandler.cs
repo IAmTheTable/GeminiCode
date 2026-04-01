@@ -358,6 +358,8 @@ public class CommandHandler
 
     private void HandleExit()
     {
+        _sessionContext.SaveToFile();
+        Console.WriteLine($"{AnsiHelper.Dim}Session context saved.{AnsiHelper.Reset}");
         Console.WriteLine("Goodbye.");
         _browser.Dispose();
         Environment.Exit(0);
