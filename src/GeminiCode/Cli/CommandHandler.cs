@@ -12,17 +12,20 @@ public class CommandHandler
     private readonly ConversationManager _conversation;
     private readonly SessionAllowlist _allowlist;
     private readonly PathSandbox _sandbox;
+    private readonly AgentProfile _profile;
 
     public CommandHandler(
         BrowserBridge browser,
         ConversationManager conversation,
         SessionAllowlist allowlist,
-        PathSandbox sandbox)
+        PathSandbox sandbox,
+        AgentProfile profile)
     {
         _browser = browser;
         _conversation = conversation;
         _allowlist = allowlist;
         _sandbox = sandbox;
+        _profile = profile;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
@@ -71,6 +74,9 @@ public class CommandHandler
             case "/paste":
                 Console.WriteLine("Paste mode: enter text, then type END on a new line to finish.");
                 return true;
+            case "/agent":
+                await HandleAgentAsync(arg);
+                return true;
             case "/exit":
                 HandleExit();
                 return true;
@@ -95,6 +101,7 @@ public class CommandHandler
               /status          — Show session state
               /cd <path>       — Change working directory
               /paste           — Multi-line paste mode
+              /agent [name]    — List or switch agent profiles
               /exit            — Quit GeminiCode
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
@@ -223,6 +230,48 @@ public class CommandHandler
         {
             Console.WriteLine($"\r{AnsiHelper.Green}No usage limits detected.              {AnsiHelper.Reset}");
         }
+    }
+
+    private async Task HandleAgentAsync(string? arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg) || arg == "list")
+        {
+            var profiles = _profile.ListProfiles();
+            Console.WriteLine($"{AnsiHelper.Bold}Available agent profiles:{AnsiHelper.Reset}");
+            foreach (var name in profiles)
+            {
+                var marker = name == _profile.ActiveProfileName ? $" {AnsiHelper.Green}(active){AnsiHelper.Reset}" : "";
+                Console.WriteLine($"  - {name}{marker}");
+            }
+            Console.WriteLine($"\n  Usage: /agent <name> — switch profile (starts new chat)");
+            return;
+        }
+
+        if (arg == "info")
+        {
+            Console.WriteLine($"{AnsiHelper.Bold}Active profile:{AnsiHelper.Reset} {_profile.ActiveProfileName}");
+            var content = _profile.GetActiveProfileContent();
+            Console.WriteLine(content);
+            var geminiMd = _profile.GetGeminiMdContent();
+            if (geminiMd != null)
+                Console.WriteLine($"\n{AnsiHelper.Bold}GEMINI.md:{AnsiHelper.Reset} loaded ({geminiMd.Length} chars)");
+            else
+                Console.WriteLine($"\n{AnsiHelper.Dim}No GEMINI.md found in working directory.{AnsiHelper.Reset}");
+            return;
+        }
+
+        if (!_profile.SetActive(arg))
+        {
+            Console.WriteLine($"{AnsiHelper.Red}Profile '{arg}' not found.{AnsiHelper.Reset}");
+            Console.WriteLine("Available: " + string.Join(", ", _profile.ListProfiles()));
+            return;
+        }
+
+        Console.WriteLine($"{AnsiHelper.Green}Switched to profile: {arg}{AnsiHelper.Reset}");
+        await _browser.StartNewChatAsync();
+        await _browser.WaitForPageSettleAsync();
+        _conversation.Reset();
+        Console.WriteLine($"{AnsiHelper.Green}New conversation started with {arg} profile.{AnsiHelper.Reset}");
     }
 
     private void HandleExit()

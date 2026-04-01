@@ -122,7 +122,7 @@ public class Program
 
         // Initialize context processor and CLI
         var contextProcessor = new ContextProcessor(sandbox);
-        var commands = new CommandHandler(browser, conversation, allowlist, sandbox);
+        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile);
         var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works
