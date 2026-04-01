@@ -260,6 +260,106 @@ public class BrowserBridge : IDisposable
         }
     }
 
+    /// <summary>Upload a file to Gemini via the file input element or drag-drop simulation.</summary>
+    public async Task<bool> UploadFileAsync(string filePath)
+    {
+        if (!File.Exists(filePath))
+            return false;
+
+        var fileName = Path.GetFileName(filePath);
+        var mimeType = GetMimeType(fileName);
+
+        // Read file as base64 for injection
+        var bytes = await File.ReadAllBytesAsync(filePath);
+        var base64 = Convert.ToBase64String(bytes);
+
+        // Strategy: Find file input element, create a File object from base64, set it
+        var uploadScript = $$"""
+            (async function() {
+                // Convert base64 to File object
+                var base64 = '{{base64}}';
+                var byteChars = atob(base64);
+                var byteArray = new Uint8Array(byteChars.length);
+                for (var i = 0; i < byteChars.length; i++) {
+                    byteArray[i] = byteChars.charCodeAt(i);
+                }
+                var blob = new Blob([byteArray], { type: '{{mimeType}}' });
+                var file = new File([blob], '{{EscapeJs(fileName)}}', { type: '{{mimeType}}' });
+
+                // Strategy 1: Find the file input element and set files
+                var fileInputs = document.querySelectorAll('input[type="file"]');
+                if (fileInputs.length > 0) {
+                    var dt = new DataTransfer();
+                    dt.items.add(file);
+                    fileInputs[0].files = dt.files;
+                    fileInputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'input_set';
+                }
+
+                // Strategy 2: Find upload/attach button and click it, then set via created input
+                var attachBtns = document.querySelectorAll('[aria-label*="upload" i], [aria-label*="attach" i], [aria-label*="file" i], [data-tooltip*="upload" i], [data-tooltip*="attach" i]');
+                for (var btn of attachBtns) {
+                    btn.click();
+                    await new Promise(r => setTimeout(r, 500));
+                    var newInputs = document.querySelectorAll('input[type="file"]');
+                    if (newInputs.length > 0) {
+                        var dt2 = new DataTransfer();
+                        dt2.items.add(file);
+                        newInputs[newInputs.length - 1].files = dt2.files;
+                        newInputs[newInputs.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
+                        return 'button_then_input';
+                    }
+                }
+
+                // Strategy 3: Drag-drop simulation on the chat input area
+                var editor = document.querySelector("{{EscapeJs(_selectors.ChatInput)}}");
+                if (editor) {
+                    var dt3 = new DataTransfer();
+                    dt3.items.add(file);
+                    var dropEvent = new DragEvent('drop', {
+                        bubbles: true,
+                        cancelable: true,
+                        dataTransfer: dt3
+                    });
+                    editor.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer: dt3 }));
+                    editor.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt3 }));
+                    editor.dispatchEvent(dropEvent);
+                    return 'drop_simulated';
+                }
+
+                return 'no_upload_found';
+            })()
+            """;
+
+        var result = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(uploadScript));
+
+        var status = result.Trim('"');
+        return status != "no_upload_found";
+    }
+
+    private static string GetMimeType(string fileName)
+    {
+        var ext = Path.GetExtension(fileName).ToLowerInvariant();
+        return ext switch
+        {
+            ".txt" or ".md" or ".csv" => "text/plain",
+            ".json" => "application/json",
+            ".xml" => "application/xml",
+            ".pdf" => "application/pdf",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            ".svg" => "image/svg+xml",
+            ".cs" or ".py" or ".js" or ".ts" or ".java" or ".go" or ".rs" or ".rb" or ".cpp" or ".c" or ".h" => "text/plain",
+            ".html" => "text/html",
+            ".css" => "text/css",
+            ".yaml" or ".yml" => "text/yaml",
+            _ => "application/octet-stream"
+        };
+    }
+
     /// <summary>Capture the current page state so WaitForResponseAsync can detect new content.</summary>
     public async Task<(int textLen, int preCount)> CaptureBaselineAsync()
     {
