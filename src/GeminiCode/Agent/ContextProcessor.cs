@@ -15,6 +15,9 @@ public class ContextProcessor
     private readonly PathSandbox _sandbox;
     private const int MaxContextBytes = 80 * 1024; // Leave room in token budget
 
+    /// <summary>Files queued for upload (populated during Process, consumed by caller).</summary>
+    public List<string> PendingUploads { get; } = new();
+
     // Skip directories for tree/find
     private static readonly HashSet<string> SkipDirs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -25,10 +28,16 @@ public class ContextProcessor
     };
 
     // @file path/to/file.cs
-    // @file path/to/file.cs:10-50
-    // @file path/to/file.cs:10
+    // @file path/to/file.cs L200-L500
+    // @file path/to/file.cs L200
+    // @file path/to/file.cs:10-50 (legacy syntax still supported)
     private static readonly Regex FilePattern = new(
-        @"@file\s+([^\s:]+)(?::(\d+)(?:-(\d+))?)?",
+        @"@file\s+(\S+?)(?:\s+L(\d+)(?:-L(\d+))?|:(\d+)(?:-(\d+))?)?(?=\s|$)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // @upload path/to/file (always uploads, never text-injects)
+    private static readonly Regex UploadPattern = new(
+        @"@upload\s+(\S+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // @tree [path] [depth=N]
@@ -75,13 +84,72 @@ public class ContextProcessor
         var contexts = new List<(string tag, string content)>();
         var processed = input;
 
+        PendingUploads.Clear();
+
         // Process @file references
         processed = FilePattern.Replace(processed, m =>
         {
-            var result = ExpandFile(m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value);
-            if (result != null)
-                contexts.Add(($"@file {m.Groups[1].Value}", result));
-            return ""; // Remove the @tag from the message
+            var filePath = m.Groups[1].Value;
+            var hasLRange = m.Groups[2].Success;
+            var hasColonRange = m.Groups[4].Success;
+
+            if (hasLRange)
+            {
+                var result = ExpandFile(filePath, m.Groups[2].Value, m.Groups[3].Value);
+                if (result != null)
+                    contexts.Add(($"@file {filePath}", result));
+            }
+            else if (hasColonRange)
+            {
+                var result = ExpandFile(filePath, m.Groups[4].Value, m.Groups[5].Value);
+                if (result != null)
+                    contexts.Add(($"@file {filePath}", result));
+            }
+            else
+            {
+                try
+                {
+                    var resolved = _sandbox.Resolve(filePath);
+                    if (File.Exists(resolved))
+                    {
+                        PendingUploads.Add(resolved);
+                        contexts.Add(($"@file {filePath}", $"[File queued for upload: {filePath}]"));
+                    }
+                    else
+                    {
+                        contexts.Add(($"@file {filePath}", $"[File not found: {filePath}]"));
+                    }
+                }
+                catch (SandboxViolationException)
+                {
+                    contexts.Add(($"@file {filePath}", $"[Access denied: {filePath} is outside working directory]"));
+                }
+            }
+            return "";
+        });
+
+        // Process @upload references
+        processed = UploadPattern.Replace(processed, m =>
+        {
+            var filePath = m.Groups[1].Value;
+            try
+            {
+                var resolved = _sandbox.Resolve(filePath);
+                if (File.Exists(resolved))
+                {
+                    PendingUploads.Add(resolved);
+                    contexts.Add(($"@upload {filePath}", $"[File queued for upload: {filePath}]"));
+                }
+                else
+                {
+                    contexts.Add(($"@upload {filePath}", $"[File not found: {filePath}]"));
+                }
+            }
+            catch (SandboxViolationException)
+            {
+                contexts.Add(($"@upload {filePath}", $"[Access denied: {filePath} is outside working directory]"));
+            }
+            return "";
         });
 
         // Process @tree
@@ -184,9 +252,11 @@ public class ContextProcessor
     public static string GetHelpText()
     {
         return """
-              @file <path>           — Attach file contents
-              @file <path>:10-50     — Attach specific line range
-              @file <path>:10        — Attach from line 10 onwards
+              @file <path>           — Upload file to Gemini
+              @file <path> L200-L500 — Attach specific line range as text
+              @file <path> L200      — Attach from line 200 onwards as text
+              @file <path>:10-50     — Attach line range (legacy syntax)
+              @upload <path>         — Upload file to Gemini (explicit)
               @tree [path] [depth=N] — Attach directory tree
               @git <status|diff|log|blame|branch> [args] — Attach git info
               @diff [args]           — Shorthand for @git diff

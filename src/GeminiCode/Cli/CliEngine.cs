@@ -68,6 +68,19 @@ public class CliEngine
                 input = expandedInput;
             }
 
+            // Upload any pending files
+            if (_contextProcessor.PendingUploads.Count > 0)
+            {
+                foreach (var uploadPath in _contextProcessor.PendingUploads)
+                {
+                    Console.WriteLine($"{AnsiHelper.Cyan}Uploading: {Path.GetFileName(uploadPath)}{AnsiHelper.Reset}");
+                    var uploaded = await _browser.UploadFileAsync(uploadPath);
+                    if (!uploaded)
+                        Console.WriteLine($"{AnsiHelper.Yellow}Upload may not have succeeded for {Path.GetFileName(uploadPath)}{AnsiHelper.Reset}");
+                }
+                await Task.Delay(500);
+            }
+
             // Send to Gemini
             Console.WriteLine($"{AnsiHelper.Dim}Sending to Gemini...{AnsiHelper.Reset}");
 
