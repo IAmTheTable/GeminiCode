@@ -26,6 +26,23 @@ public class AgentProfileTests
     }
 
     [Fact]
+    public void LoadProfile_CodeReviewer_ReturnsContent()
+    {
+        var profile = new AgentProfile();
+        profile.SetActive("code-reviewer");
+        var content = profile.GetActiveProfileContent();
+        Assert.Contains("code reviewer", content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SetActive_NormalizesCase()
+    {
+        var profile = new AgentProfile();
+        profile.SetActive("Code-Reviewer");
+        Assert.Equal("code-reviewer", profile.ActiveProfileName);
+    }
+
+    [Fact]
     public void LoadProfile_Unknown_ReturnsFalse()
     {
         var profile = new AgentProfile();

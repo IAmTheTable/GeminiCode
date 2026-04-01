@@ -50,9 +50,10 @@ public class AgentProfile
             }
         }
 
-        if (BuiltInProfiles.Contains(name, StringComparer.OrdinalIgnoreCase))
+        var match = BuiltInProfiles.FirstOrDefault(p => p.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (match != null)
         {
-            _activeProfile = name;
+            _activeProfile = match;
             return true;
         }
 
@@ -69,7 +70,7 @@ public class AgentProfile
         }
 
         var assembly = Assembly.GetExecutingAssembly();
-        var resourceName = $"GeminiCode.Agent.Profiles.{_activeProfile.Replace("-", "_")}.md";
+        var resourceName = $"GeminiCode.Agent.Profiles.{_activeProfile}.md";
 
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null)
