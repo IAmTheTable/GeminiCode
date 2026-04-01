@@ -16,6 +16,7 @@ public class AgentOrchestrator
     private readonly ConversationManager _conversation;
     private readonly AppSettings _settings;
     private readonly Tools.PathSandbox _sandbox;
+    private readonly AgentProfile _profile;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -27,7 +28,8 @@ public class AgentOrchestrator
         PermissionGate permissionGate,
         ConversationManager conversation,
         AppSettings settings,
-        Tools.PathSandbox sandbox)
+        Tools.PathSandbox sandbox,
+        AgentProfile profile)
     {
         _browser = browser;
         _tools = tools;
@@ -35,6 +37,7 @@ public class AgentOrchestrator
         _conversation = conversation;
         _settings = settings;
         _sandbox = sandbox;
+        _profile = profile;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -54,7 +57,9 @@ public class AgentOrchestrator
 
         Console.WriteLine($"{AnsiHelper.Dim}Initializing agent session...{AnsiHelper.Reset}");
         var initBaseline = await _browser.CaptureBaselineAsync();
-        await _browser.SendMessageAsync(SystemPrompt.GenerateTemplate(_sandbox.WorkingDirectory));
+        var profileContent = _profile.GetActiveProfileContent();
+        var geminiMd = _profile.GetGeminiMdContent();
+        await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd));
         _conversation.MarkSystemPromptSent();
 
         var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);

@@ -36,6 +36,9 @@ public class Program
         // Initialize path sandbox
         var sandbox = new PathSandbox(workDir);
 
+        // Initialize agent profile
+        var agentProfile = new AgentProfile(workDir);
+
         // Initialize tools
         var toolRegistry = new ToolRegistry();
         toolRegistry.Register(new ReadFileTool(sandbox));
@@ -115,7 +118,7 @@ public class Program
 
         // Initialize agent
         var conversation = new ConversationManager();
-        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox);
+        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile);
 
         // Initialize context processor and CLI
         var contextProcessor = new ContextProcessor(sandbox);

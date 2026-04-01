@@ -192,6 +192,31 @@ Reply with exactly "Ready." to confirm you understand these instructions.
 """;
     }
 
+    /// <summary>Generate system prompt composed from base + profile + GEMINI.md.</summary>
+    public static string Generate(string workingDirectory, string profileContent, string? geminiMdContent)
+    {
+        var basePrompt = GenerateTemplate(workingDirectory);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(basePrompt);
+
+        if (!string.IsNullOrWhiteSpace(profileContent))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Agent Profile");
+            sb.AppendLine(profileContent);
+        }
+
+        if (!string.IsNullOrWhiteSpace(geminiMdContent))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Project Instructions (GEMINI.md)");
+            sb.AppendLine(geminiMdContent);
+        }
+
+        return sb.ToString();
+    }
+
     public const string DriftReminder = "\n(SYSTEM: Use action tags: [FILE:name], [EDIT:name], [RUN], [READ], [GREP], [TREE], [GIT]. Prefer [EDIT] over [FILE] for existing files. Do NOT use markdown code blocks for code.)";
 
     public const string CorrectionPrompt = """
