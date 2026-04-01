@@ -47,7 +47,7 @@ public class CliEngine
             }
 
             // Slash commands
-            if (await _commands.TryHandleAsync(input))
+            if (await _commands.TryHandleAsync(input, ct))
             {
                 Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
                 continue;

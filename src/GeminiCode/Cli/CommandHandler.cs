@@ -1,6 +1,7 @@
 // src/GeminiCode/Cli/CommandHandler.cs
 using GeminiCode.Browser;
 using GeminiCode.Agent;
+using GeminiCode.Agent.Workflows;
 using GeminiCode.Permissions;
 using GeminiCode.Tools;
 
@@ -14,6 +15,7 @@ public class CommandHandler
     private readonly PathSandbox _sandbox;
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
+    private readonly WorkflowRunner _workflowRunner;
 
     public CommandHandler(
         BrowserBridge browser,
@@ -21,7 +23,8 @@ public class CommandHandler
         SessionAllowlist allowlist,
         PathSandbox sandbox,
         AgentProfile profile,
-        SessionContext sessionContext)
+        SessionContext sessionContext,
+        WorkflowRunner workflowRunner)
     {
         _browser = browser;
         _conversation = conversation;
@@ -29,10 +32,11 @@ public class CommandHandler
         _sandbox = sandbox;
         _profile = profile;
         _sessionContext = sessionContext;
+        _workflowRunner = workflowRunner;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
-    public async Task<bool> TryHandleAsync(string input)
+    public async Task<bool> TryHandleAsync(string input, CancellationToken ct = default)
     {
         if (!input.StartsWith('/'))
             return false;
@@ -89,6 +93,12 @@ public class CommandHandler
             case "/context":
                 HandleShowContext();
                 return true;
+            case "/simplify":
+                await HandleSimplifyAsync(ct);
+                return true;
+            case "/brainstorm":
+                await HandleBrainstormAsync(arg, ct);
+                return true;
             case "/exit":
                 HandleExit();
                 return true;
@@ -117,6 +127,8 @@ public class CommandHandler
               /save            — Save session context to .gemini/session-context.md
               /restore         — Restore previous session context in new chat
               /context         — Show current session context
+              /simplify        — Review and fix changed code (reuse, quality, efficiency)
+              /brainstorm <topic> — Guided brainstorming for features and designs
               /exit            — Quit GeminiCode
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
@@ -321,6 +333,27 @@ public class CommandHandler
     {
         var md = _sessionContext.GenerateMarkdown();
         Console.WriteLine(md);
+    }
+
+    private async Task HandleSimplifyAsync(CancellationToken ct)
+    {
+        var workflow = SimplifyWorkflow.Create();
+        var variables = new Dictionary<string, string>();
+        await _workflowRunner.RunAsync(workflow, variables, ct);
+    }
+
+    private async Task HandleBrainstormAsync(string? topic, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(topic))
+        {
+            Console.WriteLine("Usage: /brainstorm <topic or feature description>");
+            Console.WriteLine("  Example: /brainstorm add user authentication with JWT");
+            return;
+        }
+
+        var workflow = BrainstormWorkflow.Create(topic);
+        var variables = new Dictionary<string, string>();
+        await _workflowRunner.RunAsync(workflow, variables, ct);
     }
 
     private void HandleExit()

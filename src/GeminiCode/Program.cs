@@ -121,9 +121,10 @@ public class Program
         var sessionContext = new SessionContext(workDir, agentProfile.ActiveProfileName);
         var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext);
 
-        // Initialize context processor and CLI
+        // Initialize workflow runner, context processor, and CLI
+        var workflowRunner = new WorkflowRunner(orchestrator, browser);
         var contextProcessor = new ContextProcessor(sandbox);
-        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext);
+        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext, workflowRunner);
         var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works
