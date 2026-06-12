@@ -122,15 +122,22 @@ public class AgentOrchestrator
         }
         if (response == null)
         {
-            // Timeout could be caused by a limit — check again
-            var postLimit = await _browser.CheckForLimitAsync();
-            if (postLimit != null)
+            var diagnosis = await _browser.DiagnoseFailureAsync();
+            switch (diagnosis.Kind)
             {
-                HandleLimitDetected(postLimit);
-                return null;
+                case FailureKind.UsageLimit:
+                    HandleLimitDetected(diagnosis.Limit!);
+                    return null;
+                case FailureKind.NotAuthenticated:
+                    return await RecoverAuthAndResendAsync(message, ct);
+                case FailureKind.UiBroken:
+                    Console.WriteLine(ErrorPresenter.UiBroken(diagnosis.MissingElements));
+                    return null;
+                default:
+                    Console.WriteLine(ErrorPresenter.Generic(GenericErrorCategory.Timeout,
+                        "Gemini did not respond in time."));
+                    return null;
             }
-            Console.WriteLine($"{AnsiHelper.Yellow}Gemini response timed out. Type your message to retry, or /new to start fresh.{AnsiHelper.Reset}");
-            return null;
         }
 
         // Check if the response itself indicates a limit
@@ -153,6 +160,52 @@ public class AgentOrchestrator
 
         Console.WriteLine($"{AnsiHelper.Dim}{_usage.Footer()}{AnsiHelper.Reset}");
         return result;
+    }
+
+    /// <summary>Logged-out recovery: prompt the user to sign in, wait, then re-send the original prepared message.</summary>
+    private async Task<string?> RecoverAuthAndResendAsync(string message, CancellationToken ct)
+    {
+        _browser.BringToFront();
+        while (true)
+        {
+            Console.WriteLine(ErrorPresenter.AuthLost());
+            Console.Write("> ");
+            var input = Console.ReadLine()?.Trim();
+            if (input != null && (input.Equals("exit", StringComparison.OrdinalIgnoreCase)
+                               || input.Equals("/exit", StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.WriteLine($"{AnsiHelper.Dim}Aborted this message. Sign in and resend when ready.{AnsiHelper.Reset}");
+                return null;
+            }
+
+            bool authed;
+            try { authed = await _browser.CheckAuthenticatedAsync(); } catch { authed = false; }
+            if (!authed)
+            {
+                Console.WriteLine($"{AnsiHelper.Yellow}Still signed out — finish signing in, then press Enter.{AnsiHelper.Reset}");
+                continue;
+            }
+
+            Console.WriteLine($"{AnsiHelper.Green}Signed in. Re-sending your message...{AnsiHelper.Reset}");
+            _usage.RecordSent(message);
+            var baseline = await _browser.CaptureBaselineAsync();
+            await _browser.SendMessageAsync(message);
+
+            GeminiResponse? resent;
+            using (Spinner.Start("Waiting for Gemini"))
+                resent = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
+
+            if (resent == null)
+            {
+                Console.WriteLine(ErrorPresenter.Generic(GenericErrorCategory.Timeout,
+                    "Still no response after re-sending."));
+                return null;
+            }
+            if (resent.Limit != null) { HandleLimitDetected(resent.Limit); return null; }
+
+            _usage.RecordReceived(resent.Text);
+            return await ProcessResponseAsync(resent, ct);
+        }
     }
 
     /// <summary>Display limit info and suggest next steps.</summary>
@@ -429,7 +482,8 @@ public class AgentOrchestrator
             var tool = _tools.GetTool(toolCall.Name);
             if (tool == null)
             {
-                Console.WriteLine($"  {AnsiHelper.Red}✗ {toolCall.Name}: unknown tool{AnsiHelper.Reset}");
+                Console.WriteLine();
+                Console.WriteLine(ErrorPresenter.ToolFailure(toolCall.Name, $"Unknown tool: {toolCall.Name}"));
                 var result = new ToolResult(toolCall.Name, false, $"Unknown tool: {toolCall.Name}");
                 results.Add(result.ToProtocolString());
                 continue;
@@ -475,7 +529,8 @@ public class AgentOrchestrator
             }
             else
             {
-                Console.WriteLine($" {AnsiHelper.Red}✗ {toolResult.Output.Split('\n')[0]}{AnsiHelper.Reset}");
+                Console.WriteLine($" {AnsiHelper.Red}✗{AnsiHelper.Reset}");
+                Console.WriteLine(ErrorPresenter.ToolFailure(tool.Name, toolResult.Output));
             }
 
             results.Add(toolResult.ToProtocolString());
