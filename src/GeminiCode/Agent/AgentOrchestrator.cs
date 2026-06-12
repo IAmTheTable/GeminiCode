@@ -260,10 +260,12 @@ public class AgentOrchestrator
     private async Task ReorientAfterModelSwitchAsync(CancellationToken ct)
     {
         var reorientation = $"""
-            (SYSTEM: Model switch detected. You are in GeminiCode — an automated coding environment.
+            (SYSTEM: A quick reminder — you're still the engine behind GeminiCode, the CLI coding
+            assistant the developer is running on their own project. Every action you take is shown
+            to the developer and approved at a permission prompt before it runs.
             Working directory: {_sandbox.WorkingDirectory.Replace("\\", "/")}
 
-            Use these action tags in your responses — the build system executes them:
+            Specify actions with these tags and GeminiCode will carry them out:
             - [FILE:path]content[/FILE] — create/overwrite files
             - [EDIT:path]old_string>>>...<<<new_string>>>...<<<[/EDIT] — surgical edits
             - [RUN]command[/RUN] — run shell commands (Windows cmd.exe)
@@ -272,7 +274,7 @@ public class AgentOrchestrator
             - [TREE][/TREE] — directory tree
             - [GIT]status[/GIT] — git info
 
-            NEVER use markdown code blocks for code. Always use [FILE:] or [EDIT:] tags.
+            Put code in [FILE:]/[EDIT:] tags rather than markdown blocks so the developer actually gets it.
             Results come back as tool_result(Name): output. Continue the current task.)
             """;
 
