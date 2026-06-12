@@ -8,24 +8,44 @@ namespace GeminiCode.Cli;
 /// </summary>
 public class InputReader
 {
-    private static readonly CompletionItem[] SlashCommands =
+    private static readonly List<CompletionItem> SlashCommands =
     [
-        new("/help",           "Show available commands"),
-        new("/clear",          "Clear terminal"),
-        new("/new",            "Start new conversation"),
-        new("/model",          "Show/switch model"),
-        new("/model flash",    "Switch to Flash"),
-        new("/model pro",      "Switch to Pro"),
-        new("/model thinking", "Switch to Thinking"),
-        new("/limit",          "Check usage limit status"),
-        new("/browser",        "Focus browser window"),
-        new("/history",        "Show turn count"),
-        new("/allowlist",      "Show auto-approved tools"),
-        new("/status",         "Show session state"),
-        new("/cd ",            "Change working directory"),
-        new("/paste",          "Multi-line paste mode"),
-        new("/exit",           "Quit GeminiCode"),
+        new("/help",             "Show available commands"),
+        new("/clear",            "Clear terminal"),
+        new("/new",              "Start new conversation"),
+        new("/model",            "Show/switch model"),
+        new("/model flash",      "Switch to 3.5 Flash"),
+        new("/model flash-lite", "Switch to 3.1 Flash-Lite"),
+        new("/model pro",        "Switch to 3.1 Pro"),
+        new("/model standard",   "Thinking level: Standard"),
+        new("/model extended",   "Thinking level: Extended"),
+        new("/limit",            "Check usage limit status"),
+        new("/usage",            "Show estimated token usage"),
+        new("/browser",          "Focus browser window"),
+        new("/history",          "Show turn count"),
+        new("/allowlist",        "Show auto-approved tools"),
+        new("/tools",            "List available tools"),
+        new("/plugins",          "List loaded plugins"),
+        new("/reload",           "Re-scan the plugins folder"),
+        new("/status",           "Show session state"),
+        new("/cd ",              "Change working directory"),
+        new("/agent ",           "List or switch agent profiles"),
+        new("/init",             "Create a starter GEMINI.md"),
+        new("/compact",          "Summarize context and start fresh"),
+        new("/save",             "Save session context"),
+        new("/restore",          "Restore previous session context"),
+        new("/context",          "Show current session context"),
+        new("/paste",            "Multi-line paste mode"),
+        new("/exit",             "Quit GeminiCode"),
     ];
+
+    /// <summary>Append dynamic commands (e.g. dropped plugins) to the completion list.</summary>
+    public static void AddCommands(IEnumerable<(string Text, string Description)> commands)
+    {
+        foreach (var (text, desc) in commands)
+            if (!SlashCommands.Any(c => c.Text.Equals(text, StringComparison.OrdinalIgnoreCase)))
+                SlashCommands.Add(new CompletionItem(text, desc));
+    }
 
     private static readonly CompletionItem[] AtContexts =
     [
@@ -53,6 +73,7 @@ public class InputReader
         CompletionItem[]? matches = null;
         var popupVisible = false;
         var popupLineCount = 0;
+        _scrollOffset = 0;
 
         while (true)
         {
@@ -192,7 +213,8 @@ public class InputReader
     }
 
     private const int PromptWidth = 2; // "> "
-    private const int MaxPopupItems = 8;
+    private const int MaxPopupItems = 10;
+    private static int _scrollOffset; // first visible item index when the list scrolls
 
     /// <summary>Check if we should show/hide/update the popup based on current input.</summary>
     private static void UpdatePopup(List<char> buffer, int cursorPos,
@@ -224,6 +246,7 @@ public class InputReader
         }
 
         selectedIndex = 0;
+        _scrollOffset = 0;
         popupVisible = true;
         ShowPopup(matches, selectedIndex, ref popupLineCount);
     }
@@ -304,41 +327,55 @@ public class InputReader
             }
         }
 
-        var count = Math.Min(items.Length, MaxPopupItems);
-        popupLineCount = count;
+        // Scroll the visible window so the selected item stays in view.
+        if (selectedIndex >= 0)
+        {
+            if (selectedIndex < _scrollOffset) _scrollOffset = selectedIndex;
+            else if (selectedIndex >= _scrollOffset + MaxPopupItems) _scrollOffset = selectedIndex - MaxPopupItems + 1;
+        }
+        var maxOffset = Math.Max(0, items.Length - MaxPopupItems);
+        _scrollOffset = Math.Clamp(_scrollOffset, 0, maxOffset);
+
+        var visibleCount = Math.Min(MaxPopupItems, items.Length - _scrollOffset);
+        var hasAbove = _scrollOffset > 0;
+        var hasBelow = _scrollOffset + visibleCount < items.Length;
+        popupLineCount = visibleCount + (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0);
 
         // Ensure we have room below
-        while (inputTop + count >= Console.BufferHeight)
+        while (inputTop + popupLineCount >= Console.BufferHeight)
         {
             Console.SetCursorPosition(0, Console.BufferHeight - 1);
             Console.WriteLine();
             inputTop--;
         }
 
-        for (int i = 0; i < count; i++)
-        {
-            Console.SetCursorPosition(PromptWidth, inputTop + 1 + i);
-            Console.Write(new string(' ', Console.WindowWidth - PromptWidth - 1));
-            Console.SetCursorPosition(PromptWidth, inputTop + 1 + i);
+        var clearWidth = Console.WindowWidth - PromptWidth - 1;
+        var line = 0;
 
-            var item = items[i];
-            if (i == selectedIndex)
-            {
-                Console.Write($"{AnsiHelper.BgDarkGray}{AnsiHelper.Cyan}{AnsiHelper.Bold} {item.Text,-24}{AnsiHelper.Reset}");
-                Console.Write($"{AnsiHelper.BgDarkGray}{AnsiHelper.Dim} {item.Description}{AnsiHelper.Reset}");
-            }
+        void WriteRow(string content)
+        {
+            Console.SetCursorPosition(PromptWidth, inputTop + 1 + line);
+            Console.Write(new string(' ', clearWidth));
+            Console.SetCursorPosition(PromptWidth, inputTop + 1 + line);
+            Console.Write(content);
+            line++;
+        }
+
+        if (hasAbove)
+            WriteRow($"  {AnsiHelper.Dim}↑ {_scrollOffset} more{AnsiHelper.Reset}");
+
+        for (int i = 0; i < visibleCount; i++)
+        {
+            var idx = _scrollOffset + i;
+            var item = items[idx];
+            if (idx == selectedIndex)
+                WriteRow($"{AnsiHelper.BgDarkGray}{AnsiHelper.Cyan}{AnsiHelper.Bold} {item.Text,-24}{AnsiHelper.Reset}{AnsiHelper.BgDarkGray}{AnsiHelper.Dim} {item.Description}{AnsiHelper.Reset}");
             else
-            {
-                Console.Write($"  {AnsiHelper.Dim}{item.Text,-24}{item.Description}{AnsiHelper.Reset}");
-            }
+                WriteRow($"  {AnsiHelper.Dim}{item.Text,-24}{item.Description}{AnsiHelper.Reset}");
         }
 
-        if (items.Length > MaxPopupItems)
-        {
-            Console.SetCursorPosition(PromptWidth, inputTop + 1 + count);
-            Console.Write($"  {AnsiHelper.Dim}+{items.Length - MaxPopupItems} more...{AnsiHelper.Reset}");
-            popupLineCount++;
-        }
+        if (hasBelow)
+            WriteRow($"  {AnsiHelper.Dim}↓ {items.Length - (_scrollOffset + visibleCount)} more (press ↓){AnsiHelper.Reset}");
 
         // Restore cursor
         Console.SetCursorPosition(inputLeft, inputTop);

@@ -50,6 +50,9 @@ public class Program
         foreach (var w in pluginRegistry.Warnings)
             Console.WriteLine($"{AnsiHelper.Yellow}Plugin warning: {w}{AnsiHelper.Reset}");
 
+        // Surface plugin commands in tab-completion
+        InputReader.AddCommands(pluginRegistry.Plugins.Select(p => (p.Command, p.Description)));
+
         // Initialize tools
         var toolRegistry = new ToolRegistry();
         toolRegistry.Register(new ReadFileTool(sandbox));

@@ -308,11 +308,14 @@ public class AgentOrchestrator
         // ── Thinking / Conversational Text ──
         if (!string.IsNullOrWhiteSpace(parsed.TextContent))
         {
-            var label = parsed.ToolCalls.Count > 0 ? "Thinking" : "Response";
-            PrintSection(label, "magenta");
-            var rendered = MarkdownRenderer.Render(parsed.TextContent);
-            Console.Write(rendered);
-            Console.WriteLine();
+            var displayText = StripTagFragments(parsed.TextContent);
+            if (!string.IsNullOrWhiteSpace(displayText))
+            {
+                var label = parsed.ToolCalls.Count > 0 ? "Thinking" : "Response";
+                PrintSection(label, "magenta");
+                Console.Write(MarkdownRenderer.Render(displayText));
+                Console.WriteLine();
+            }
 
             // Auto-detect decisions in response text
             if (parsed.TextContent != null)
@@ -445,8 +448,10 @@ public class AgentOrchestrator
             @"Gemini (is AI and )?can make mistakes.*?$",
             "", RegexOptions.Multiline | RegexOptions.IgnoreCase);
 
-        // Strip model picker labels that leak in
-        text = Regex.Replace(text, @"\n(Tools\n)?(Fast|Pro|Thinking)\s*$", "", RegexOptions.Multiline);
+        // Strip model picker labels that leak in (current Gemini modes)
+        text = Regex.Replace(text, @"(?m)\n(Tools\n)?(Fast|Flash(?:[- ]?Lite)?|Pro|Thinking|Standard|Extended)\s*$", "");
+        // Strip a model label glued to the very end with no newline (e.g. "...done!Flash")
+        text = Regex.Replace(text.TrimEnd(), @"(?<=\S)(Flash-Lite|Flash|Pro|Thinking)\s*$", "");
 
         // Strip "Code snippet" labels Gemini adds
         text = Regex.Replace(text, @"\nCode snippet\s*\n", "\n", RegexOptions.IgnoreCase);
@@ -455,9 +460,14 @@ public class AgentOrchestrator
         text = Regex.Replace(text, @"(?:^|\n)\s*You said\s*\n[\s\S]*?(?=\n\s*Gemini said|\z)", "\n", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"(?:^|\n)\s*Gemini said\s*\n", "\n", RegexOptions.IgnoreCase);
 
-        // Strip leaked system prompt fragments
+        // Strip leaked "Available Skills" prompt fragments (e.g. "(also /simplify for the user)")
+        text = Regex.Replace(text, @"\(?\s*also\s+/[\w-]+\s+for the user\)?", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"(?m)^.*You can invoke a skill yourself.*$", "", RegexOptions.IgnoreCase);
+
+        // Strip leaked system-prompt acknowledgement fragments
+        text = Regex.Replace(text, @"When you've read this, reply with just:?\s*Ready\.?", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"Reply with exactly ""Ready\."" to confirm.*$", "", RegexOptions.Multiline | RegexOptions.IgnoreCase);
-        text = Regex.Replace(text, @"\nConfirm\s*\n", "\n", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\n(Confirm|Acknowledge)\s*\n", "\n", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^\s*Ready\.\s*$", "", RegexOptions.Multiline);
 
         // Strip leaked tool_result/tool_error echoes (Gemini sometimes echoes these back)
@@ -471,6 +481,19 @@ public class AgentOrchestrator
         // Clean up excessive whitespace
         text = Regex.Replace(text.Trim(), @"\n{3,}", "\n\n");
         return text;
+    }
+
+    /// <summary>Remove orphaned/partial action-tag fragments the parser couldn't consume
+    /// (e.g. a stray "[/MKDIR]" left behind when the scraped DOM split a tag mid-stream).
+    /// Real tags are already removed by the parser, so any remaining [UPPERCASE…] bracket or
+    /// EDIT delimiter is a leftover fragment, not prose.</summary>
+    private static string StripTagFragments(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        text = Regex.Replace(text, @"\[\s*/?\s*[A-Z][A-Z_]{1,9}(?::[^\]\n]*)?\s*\]", "");
+        text = Regex.Replace(text, @"(?m)^\s*(old_string|new_string)>>>\s*$", "");
+        text = Regex.Replace(text, @"<<<|>>>", "");
+        return Regex.Replace(text.Trim(), @"\n{3,}", "\n\n");
     }
 
     private async Task<string?> ExecuteToolCallsAsync(List<ParsedToolCall> toolCalls, CancellationToken ct)
