@@ -70,7 +70,11 @@ public class AgentOrchestrator
         await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd, pluginInfo));
         _conversation.MarkSystemPromptSent();
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);
+        GeminiResponse? response;
+        using (Spinner.Start("Initializing"))
+        {
+            response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);
+        }
         if (response != null)
         {
             Console.WriteLine($"{AnsiHelper.Green}Agent ready.{AnsiHelper.Reset}");
@@ -107,7 +111,11 @@ public class AgentOrchestrator
         var baseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(message);
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
+        GeminiResponse? response;
+        using (Spinner.Start("Waiting for Gemini"))
+        {
+            response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
+        }
         if (response == null)
         {
             // Timeout could be caused by a limit — check again
@@ -214,7 +222,11 @@ public class AgentOrchestrator
         await _browser.SendMessageAsync(reorientation);
 
         // Wait for acknowledgment but don't process it — it's just a system message
-        var ack = await _browser.WaitForResponseAsync(30, ct, baseline.textLen, baseline.preCount);
+        GeminiResponse? ack;
+        using (Spinner.Start("Re-orienting"))
+        {
+            ack = await _browser.WaitForResponseAsync(30, ct, baseline.textLen, baseline.preCount);
+        }
         if (ack != null)
             Console.WriteLine($"{AnsiHelper.Green}New model oriented.{AnsiHelper.Reset}");
         else
@@ -468,7 +480,11 @@ public class AgentOrchestrator
         var followBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(combinedResults);
 
-        var followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
+        GeminiResponse? followUp;
+        using (Spinner.Start("Waiting for Gemini"))
+        {
+            followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
+        }
         if (followUp == null)
         {
             var limit = await _browser.CheckForLimitAsync();
