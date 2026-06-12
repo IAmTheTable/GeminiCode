@@ -433,10 +433,22 @@ public class BrowserBridge : IDisposable
                 var baseTextLen = {{baselineTextLen}};
                 var basePreCount = {{baselinePreCount}};
 
-                var main = document.querySelector('[class*="chat-container"]')
-                    || document.querySelector('.content-container')
-                    || document.querySelector('.main-content');
-                if (!main) return JSON.stringify({done: false, reason: 'no_main'});
+                // Grab the LAST model response element directly. This is robust against page
+                // chrome ("You said" / "Gemini said" / disclaimers / model label) and previous
+                // turns — unlike diffing the whole conversation panel by character length, which
+                // drifts and pulls in earlier responses. Fall back progressively.
+                var responses = document.querySelectorAll('.model-response-text');
+                var respEl = responses.length ? responses[responses.length - 1] : null;
+                if (!respEl) {
+                    var mc = document.querySelectorAll('message-content');
+                    respEl = mc.length ? mc[mc.length - 1] : null;
+                }
+                if (!respEl) {
+                    respEl = document.querySelector('[class*="chat-container"]')
+                        || document.querySelector('.content-container')
+                        || document.querySelector('.main-content');
+                }
+                if (!respEl) return JSON.stringify({done: false, reason: 'no_response'});
 
                 // Whitespace-preserving text extraction:
                 // innerText collapses whitespace in non-<pre> elements, destroying
@@ -474,17 +486,13 @@ public class BrowserBridge : IDisposable
                     return parts.join('');
                 }
 
-                var fullText = extractText(main);
-
-                // Only return NEW text (after baseline)
-                var safeStart = Math.max(0, baseTextLen - 200);
-                var newText = fullText.length > safeStart ? fullText.substring(safeStart).trim() : '';
+                var newText = extractText(respEl).trim();
                 if (!newText || newText.length < 5) return JSON.stringify({done: false, reason: 'no_new_text'});
 
-                // Only extract NEW code blocks (after baseline pre count)
-                var allPres = main.querySelectorAll('pre');
+                // Code blocks within this response only
+                var allPres = respEl.querySelectorAll('pre');
                 var newCodeBlocks = [];
-                for (var i = basePreCount; i < allPres.length; i++) {
+                for (var i = 0; i < allPres.length; i++) {
                     var el = allPres[i];
                     var codeEl = el.querySelector('code') || el;
                     var code = codeEl.textContent || '';
