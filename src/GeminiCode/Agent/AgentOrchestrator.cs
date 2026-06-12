@@ -222,9 +222,9 @@ public class AgentOrchestrator
         Console.WriteLine();
         Console.WriteLine($"  {AnsiHelper.Dim}Current model: {currentModel}{AnsiHelper.Reset}");
         Console.WriteLine($"  {AnsiHelper.Cyan}Options:{AnsiHelper.Reset}");
-        Console.WriteLine($"    /model flash     — switch to Flash (higher limits)");
-        Console.WriteLine($"    /model pro       — switch to Pro");
-        Console.WriteLine($"    /model thinking  — switch to Thinking");
+        Console.WriteLine($"    /model flash      — switch to 3.5 Flash (higher limits)");
+        Console.WriteLine($"    /model flash-lite — switch to 3.1 Flash-Lite (fastest)");
+        Console.WriteLine($"    /model pro        — switch to 3.1 Pro");
         Console.WriteLine($"    /new             — start a new conversation");
         Console.WriteLine($"    {AnsiHelper.Dim}Or just wait and try again{AnsiHelper.Reset}");
         Console.WriteLine($"{AnsiHelper.Red}────────────────────────────────────────────────────{AnsiHelper.Reset}");

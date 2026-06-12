@@ -730,13 +730,24 @@ public class BrowserBridge : IDisposable
         return tcs.Task;
     }
 
-    /// <summary>Switches the Gemini model mode (e.g., "Flash", "Pro", "Thinking").</summary>
+    /// <summary>Switches the Gemini model. Recognized: "flash" (3.5 Flash), "flash-lite"/"lite"
+    /// (3.1 Flash-Lite), "pro" (3.1 Pro). The "Thinking level" (Standard/Extended) is a separate
+    /// submenu handled elsewhere — this method selects top-level models only.</summary>
     public async Task<string> SwitchModelAsync(string modeName)
     {
-        // Step 1: Click the mode picker button to open the dropdown
+        var mode = modeName.ToLowerInvariant().Trim();
+
+        // Step 1: Open the model picker (data-test-id, with a text-based fallback in case it changed).
         var openScript = """
             (function() {
                 var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+                if (!btn) {
+                    btn = Array.from(document.querySelectorAll('button')).find(function(b) {
+                        var t = (b.innerText || '').toLowerCase();
+                        return (b.getAttribute('aria-haspopup') !== null || b.getAttribute('aria-expanded') !== null)
+                               && /flash|pro|lite|thinking/.test(t);
+                    });
+                }
                 if (!btn) return 'no_picker';
                 btn.click();
                 return 'opened';
@@ -745,32 +756,43 @@ public class BrowserBridge : IDisposable
         var openResult = await InvokeOnStaAsync(() =>
             _window!.WebView.CoreWebView2.ExecuteScriptAsync(openScript));
 
+        string openVal;
+        try { openVal = JsonSerializer.Deserialize<string>(openResult) ?? openResult; }
+        catch { openVal = openResult; }
+        if (openVal.Contains("no_picker"))
+            return JsonSerializer.Serialize(new { success = false, available = Array.Empty<string>() });
+
         // Wait for menu animation
         await Task.Delay(800);
 
-        // Step 2: Find and click the menu item matching the mode name
-        var escapedMode = JsonSerializer.Serialize(modeName.ToLowerInvariant());
-        var selectScript = $$$"""
+        // Step 2: Pick the matching model row. Disambiguate "flash" (3.5 Flash) from "flash-lite",
+        // since a naive substring match on "flash" would otherwise grab Flash-Lite (listed first).
+        var escapedMode = JsonSerializer.Serialize(mode);
+        var selectScript = $$"""
             (function() {
-                var modeName = {{{escapedMode}}};
-                // Look for menu items in the dropdown
-                var items = document.querySelectorAll(
-                    '[role="menuitem"], [role="option"], mat-option, .mat-mdc-menu-item, ' +
-                    '[class*="mode-option"], [class*="model-option"], ' +
-                    '.cdk-overlay-pane button, .cdk-overlay-pane [role="menuitemradio"]'
-                );
+                function norm(s){ return (s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+                var mode = {{escapedMode}};
+                var wantLite = mode.indexOf('lite') >= 0;
+                var items = Array.from(document.querySelectorAll(
+                    '[role="menuitem"], [role="menuitemradio"], [role="option"], mat-option, ' +
+                    '.mat-mdc-menu-item, .cdk-overlay-pane button'
+                ));
+                var available = items.map(function(e){ return norm(e.innerText || e.textContent); });
+                // Model rows only — exclude the "Thinking level" submenu trigger.
+                var rows = items.filter(function(el){ return norm(el.innerText).indexOf('thinking level') < 0; });
                 var found = null;
-                var available = [];
-                items.forEach(function(el) {
-                    var text = (el.innerText || el.textContent || '').trim().toLowerCase();
-                    available.push(text);
-                    if (text.includes(modeName)) {
-                        found = el;
-                    }
-                });
+                if (wantLite) {
+                    found = rows.find(function(el){ var t = norm(el.innerText); return t.indexOf('flash-lite') >= 0 || t.indexOf('flash lite') >= 0; });
+                } else if (mode.indexOf('flash') >= 0) {
+                    found = rows.find(function(el){ var t = norm(el.innerText); return t.indexOf('flash') >= 0 && t.indexOf('lite') < 0; });
+                } else if (mode.indexOf('pro') >= 0) {
+                    found = rows.find(function(el){ return norm(el.innerText).indexOf('pro') >= 0; });
+                } else {
+                    found = rows.find(function(el){ return norm(el.innerText).indexOf(mode) >= 0; });
+                }
                 if (found) {
                     found.click();
-                    return JSON.stringify({success: true, selected: found.innerText.trim(), available: available});
+                    return JSON.stringify({success: true, selected: norm(found.innerText), available: available});
                 }
                 return JSON.stringify({success: false, available: available});
             })()
@@ -783,6 +805,70 @@ public class BrowserBridge : IDisposable
 
         try { return JsonSerializer.Deserialize<string>(selectResult) ?? selectResult; }
         catch { return selectResult; }
+    }
+
+    /// <summary>Sets the Gemini "Thinking level" submenu to "standard" or "extended".
+    /// Verified against the live DOM: the level items are gem-menu-item[role=menuitem] whose
+    /// text starts with "Standard"/"Extended", rendered in a second cdk-overlay-pane.</summary>
+    public async Task<string> SetThinkingLevelAsync(string level)
+    {
+        var want = level.ToLowerInvariant().Contains("standard") ? "standard" : "extended";
+
+        // Step 1: open the model menu (only if not already open — the button toggles).
+        var openScript = """
+            (function() {
+                var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+                if (!btn) return 'no_picker';
+                if (document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]').length === 0) btn.click();
+                return 'opened';
+            })()
+            """;
+        var openRes = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(openScript));
+        string openVal;
+        try { openVal = JsonSerializer.Deserialize<string>(openRes) ?? openRes; }
+        catch { openVal = openRes; }
+        if (openVal.Contains("no_picker"))
+            return JsonSerializer.Serialize(new { success = false, available = Array.Empty<string>() });
+        await Task.Delay(800);
+
+        // Step 2: open the "Thinking level" submenu (a second overlay pane).
+        var triggerScript = """
+            (function() {
+                function low(e){ return (e.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+                var trig = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]'))
+                    .find(function(e){ return low(e).indexOf('thinking level') >= 0; });
+                if (!trig) return JSON.stringify({ trigger: false });
+                trig.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+                trig.click();
+                return JSON.stringify({ trigger: true });
+            })()
+            """;
+        await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(triggerScript));
+        await Task.Delay(800);
+
+        // Step 3: click the requested level item (text starts with "standard"/"extended").
+        var escLevel = JsonSerializer.Serialize(want);
+        var selectScript = $$"""
+            (function() {
+                function norm(e){ return (e.innerText || '').replace(/\s+/g, ' ').trim(); }
+                function low(e){ return norm(e).toLowerCase(); }
+                var want = {{escLevel}};
+                var items = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]'))
+                    .filter(function(e){ var t = low(e); return t.indexOf('thinking level') < 0 && (t.indexOf('standard') === 0 || t.indexOf('extended') === 0); });
+                var available = items.map(norm);
+                var target = items.find(function(e){ return low(e).indexOf(want) === 0; });
+                if (target) { target.click(); return JSON.stringify({ success: true, selected: norm(target), available: available }); }
+                return JSON.stringify({ success: false, available: available });
+            })()
+            """;
+        var selRes = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(selectScript));
+        await Task.Delay(700);
+
+        try { return JsonSerializer.Deserialize<string>(selRes) ?? selRes; }
+        catch { return selRes; }
     }
 
     /// <summary>Wait for the Gemini page to stabilize after a navigation/model switch.</summary>
@@ -918,6 +1004,7 @@ public class BrowserBridge : IDisposable
         // Match known models (order matters — check more specific first)
         if (lower.Contains("deep") && (lower.Contains("think") || lower.Contains("research"))) return "Deep Think";
         if (lower.Contains("thinking")) return "Thinking";
+        if (lower.Contains("flash") && lower.Contains("lite")) return "Flash-Lite";
         if (lower.Contains("flash")) return "Flash";
         if (lower.Contains("pro")) return "Pro";
         if (lower.Contains("ultra")) return "Ultra";

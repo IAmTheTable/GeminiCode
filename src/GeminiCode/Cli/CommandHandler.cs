@@ -225,7 +225,33 @@ public class CommandHandler
         {
             var current = await _browser.GetCurrentModelAsync();
             Console.WriteLine($"Current model: {AnsiHelper.Bold}{current}{AnsiHelper.Reset}");
-            Console.WriteLine("Usage: /model <flash|pro|thinking>");
+            Console.WriteLine("Usage: /model <flash | flash-lite | pro>");
+            Console.WriteLine($"  {AnsiHelper.Dim}Thinking level: /model <standard | extended> (or 'thinking' = extended){AnsiHelper.Reset}");
+            return;
+        }
+
+        // Thinking level (Standard/Extended) is a submenu in Gemini's new UI, not a top-level model.
+        // "thinking" maps to Extended (closest to the old Thinking model). Does not reset the conversation.
+        var lowerMode = modeName.ToLowerInvariant().Trim();
+        if (lowerMode is "thinking" or "extended" or "standard")
+        {
+            var level = lowerMode == "standard" ? "standard" : "extended";
+            Console.WriteLine($"Setting thinking level to {level}...");
+            var levelResult = await _browser.SetThinkingLevelAsync(level);
+            try
+            {
+                using var ldoc = System.Text.Json.JsonDocument.Parse(levelResult);
+                if (ldoc.RootElement.GetProperty("success").GetBoolean())
+                {
+                    var sel = ldoc.RootElement.GetProperty("selected").GetString();
+                    Console.WriteLine($"{AnsiHelper.Green}Thinking level set: {sel}{AnsiHelper.Reset}");
+                }
+                else
+                {
+                    Console.WriteLine($"{AnsiHelper.Yellow}Couldn't set thinking level. Set it in the browser: {AnsiHelper.Bold}Flash ▾{AnsiHelper.Reset} → Thinking level.{AnsiHelper.Reset}");
+                }
+            }
+            catch { Console.WriteLine($"Result: {levelResult}"); }
             return;
         }
 
