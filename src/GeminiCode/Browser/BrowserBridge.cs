@@ -807,6 +807,70 @@ public class BrowserBridge : IDisposable
         catch { return selectResult; }
     }
 
+    /// <summary>Sets the Gemini "Thinking level" submenu to "standard" or "extended".
+    /// Verified against the live DOM: the level items are gem-menu-item[role=menuitem] whose
+    /// text starts with "Standard"/"Extended", rendered in a second cdk-overlay-pane.</summary>
+    public async Task<string> SetThinkingLevelAsync(string level)
+    {
+        var want = level.ToLowerInvariant().Contains("standard") ? "standard" : "extended";
+
+        // Step 1: open the model menu (only if not already open — the button toggles).
+        var openScript = """
+            (function() {
+                var btn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+                if (!btn) return 'no_picker';
+                if (document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]').length === 0) btn.click();
+                return 'opened';
+            })()
+            """;
+        var openRes = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(openScript));
+        string openVal;
+        try { openVal = JsonSerializer.Deserialize<string>(openRes) ?? openRes; }
+        catch { openVal = openRes; }
+        if (openVal.Contains("no_picker"))
+            return JsonSerializer.Serialize(new { success = false, available = Array.Empty<string>() });
+        await Task.Delay(800);
+
+        // Step 2: open the "Thinking level" submenu (a second overlay pane).
+        var triggerScript = """
+            (function() {
+                function low(e){ return (e.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+                var trig = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]'))
+                    .find(function(e){ return low(e).indexOf('thinking level') >= 0; });
+                if (!trig) return JSON.stringify({ trigger: false });
+                trig.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+                trig.click();
+                return JSON.stringify({ trigger: true });
+            })()
+            """;
+        await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(triggerScript));
+        await Task.Delay(800);
+
+        // Step 3: click the requested level item (text starts with "standard"/"extended").
+        var escLevel = JsonSerializer.Serialize(want);
+        var selectScript = $$"""
+            (function() {
+                function norm(e){ return (e.innerText || '').replace(/\s+/g, ' ').trim(); }
+                function low(e){ return norm(e).toLowerCase(); }
+                var want = {{escLevel}};
+                var items = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"]'))
+                    .filter(function(e){ var t = low(e); return t.indexOf('thinking level') < 0 && (t.indexOf('standard') === 0 || t.indexOf('extended') === 0); });
+                var available = items.map(norm);
+                var target = items.find(function(e){ return low(e).indexOf(want) === 0; });
+                if (target) { target.click(); return JSON.stringify({ success: true, selected: norm(target), available: available }); }
+                return JSON.stringify({ success: false, available: available });
+            })()
+            """;
+        var selRes = await InvokeOnStaAsync(() =>
+            _window!.WebView.CoreWebView2.ExecuteScriptAsync(selectScript));
+        await Task.Delay(700);
+
+        try { return JsonSerializer.Deserialize<string>(selRes) ?? selRes; }
+        catch { return selRes; }
+    }
+
     /// <summary>Wait for the Gemini page to stabilize after a navigation/model switch.</summary>
     public async Task WaitForPageSettleAsync(int maxWaitMs = 8000)
     {
