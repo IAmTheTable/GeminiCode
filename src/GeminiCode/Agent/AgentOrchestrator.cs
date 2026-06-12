@@ -90,6 +90,9 @@ public class AgentOrchestrator
 
     public async Task<string?> SendAndProcessAsync(string userMessage, CancellationToken ct)
     {
+        // Remember the request so code-block writes can infer the target filename from it.
+        _lastUserMessage = userMessage;
+
         // Ensure session is initialized
         if (_conversation.IsFirstMessage)
         {
@@ -298,6 +301,9 @@ public class AgentOrchestrator
     // Track code blocks we've already shown to avoid re-showing on follow-up messages
     private readonly HashSet<string> _seenCodeBlocks = new();
 
+    // The most recent user request — used to infer which file a code block should be written to.
+    private string? _lastUserMessage;
+
     private async Task<string?> ProcessResponseAsync(GeminiResponse response, CancellationToken ct)
     {
         // Clean boilerplate from response text
@@ -379,35 +385,41 @@ public class AgentOrchestrator
 
             foreach (var block in newBlocks)
             {
-                var ext = GetExtensionForLanguage(block.Language);
-                var suggestedName = $"script{ext}";
+                var lineCount = block.Code.Split('\n').Length;
+                var fileName = InferFilename(block, parsed.TextContent, _lastUserMessage);
 
-                var langLabel = string.IsNullOrEmpty(block.Language) ? "detected" : block.Language;
-                Console.WriteLine($"  {AnsiHelper.Dim}┌─ {langLabel} ─────────────────────{AnsiHelper.Reset}");
-                var codePreview = string.Join("\n", block.Code.Split('\n').Take(5));
-                foreach (var line in codePreview.Split('\n'))
-                    Console.WriteLine($"  {AnsiHelper.Dim}│{AnsiHelper.Reset} {line}");
-                if (block.Code.Split('\n').Length > 5)
-                    Console.WriteLine($"  {AnsiHelper.Dim}│ ... ({block.Code.Split('\n').Length} lines total){AnsiHelper.Reset}");
-                Console.WriteLine($"  {AnsiHelper.Dim}└─────────────────────────────{AnsiHelper.Reset}");
+                if (fileName != null)
+                {
+                    // We know where this goes — write it directly (the permission gate still confirms).
+                    Console.WriteLine($"  {AnsiHelper.Dim}Writing code block → {AnsiHelper.Reset}{AnsiHelper.Bold}{fileName}{AnsiHelper.Reset} {AnsiHelper.Dim}({lineCount} lines){AnsiHelper.Reset}");
+                }
+                else
+                {
+                    // Couldn't infer a filename — preview and ask.
+                    var langLabel = string.IsNullOrEmpty(block.Language) ? "detected" : block.Language;
+                    var suggestedName = $"script{GetExtensionForLanguage(block.Language)}";
+                    Console.WriteLine($"  {AnsiHelper.Dim}┌─ {langLabel} ─────────────────────{AnsiHelper.Reset}");
+                    foreach (var line in block.Code.Split('\n').Take(5))
+                        Console.WriteLine($"  {AnsiHelper.Dim}│{AnsiHelper.Reset} {line}");
+                    if (lineCount > 5)
+                        Console.WriteLine($"  {AnsiHelper.Dim}│ ... ({lineCount} lines total){AnsiHelper.Reset}");
+                    Console.WriteLine($"  {AnsiHelper.Dim}└─────────────────────────────{AnsiHelper.Reset}");
 
-                Console.Write($"  Save as [{AnsiHelper.Bold}{suggestedName}{AnsiHelper.Reset}] (filename / y / n): ");
-                var input = Console.ReadLine()?.Trim();
+                    Console.Write($"  Save as [{AnsiHelper.Bold}{suggestedName}{AnsiHelper.Reset}] (filename / y / n): ");
+                    var input = Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(input) || input.Equals("y", StringComparison.OrdinalIgnoreCase) || input.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                        input = suggestedName;
+                    if (input.Equals("n", StringComparison.OrdinalIgnoreCase) || input.Equals("no", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    fileName = input;
+                }
 
-                // Handle y/yes as accepting default name
-                if (string.IsNullOrEmpty(input) || input.Equals("y", StringComparison.OrdinalIgnoreCase) || input.Equals("yes", StringComparison.OrdinalIgnoreCase))
-                    input = suggestedName;
-
-                if (input.Equals("n", StringComparison.OrdinalIgnoreCase) || input.Equals("no", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                // Use WriteFileTool to save
                 var writeTool = _tools.GetTool("WriteFile");
                 if (writeTool != null)
                 {
                     var writeParams = new Dictionary<string, System.Text.Json.JsonElement>();
                     using var doc = System.Text.Json.JsonDocument.Parse(
-                        System.Text.Json.JsonSerializer.Serialize(new { path = input, content = block.Code }));
+                        System.Text.Json.JsonSerializer.Serialize(new { path = fileName, content = block.Code }));
                     foreach (var prop in doc.RootElement.EnumerateObject())
                         writeParams[prop.Name] = prop.Value.Clone();
 
@@ -418,7 +430,7 @@ public class AgentOrchestrator
                         var color = result.Success ? AnsiHelper.Green : AnsiHelper.Red;
                         Console.WriteLine($"  {color}{result.Output}{AnsiHelper.Reset}");
                         if (result.Success)
-                            FileSaved?.Invoke(input);
+                            FileSaved?.Invoke(fileName);
                     }
                 }
             }
@@ -617,6 +629,48 @@ public class AgentOrchestrator
             _ => AnsiHelper.Dim
         };
         Console.WriteLine($"\n{colorCode}── {label} {"─".PadRight(40, '─')}{AnsiHelper.Reset}");
+    }
+
+    private static readonly HashSet<string> KnownFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".html", ".htm", ".js", ".mjs", ".ts", ".jsx", ".tsx", ".css", ".scss", ".py", ".cs",
+        ".java", ".cpp", ".cc", ".c", ".h", ".hpp", ".go", ".rs", ".rb", ".php", ".sh", ".bash",
+        ".ps1", ".bat", ".cmd", ".sql", ".json", ".yaml", ".yml", ".xml", ".toml", ".ini",
+        ".md", ".txt", ".csv", ".kt", ".swift", ".dart", ".vue", ".svelte"
+    };
+
+    private static readonly Regex FilenameTokenPattern = new(
+        @"(?:[A-Za-z0-9_.\-]+[\\/])*[A-Za-z0-9_.\-]+\.[A-Za-z][A-Za-z0-9]{0,5}",
+        RegexOptions.Compiled);
+
+    /// <summary>Pull filename-looking tokens (with a known code/text extension) out of text.</summary>
+    public static List<string> ExtractFilenames(string? text)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrEmpty(text)) return result;
+        foreach (Match m in FilenameTokenPattern.Matches(text))
+        {
+            var token = m.Value.Replace('\\', '/').Trim();
+            if (KnownFileExtensions.Contains(Path.GetExtension(token)) &&
+                !result.Contains(token, StringComparer.OrdinalIgnoreCase))
+                result.Add(token);
+        }
+        return result;
+    }
+
+    /// <summary>Infer which file a code block should be written to: prefer a filename from the
+    /// user's request (matching the block's language), then one named in the response. Null if unsure.</summary>
+    public static string? InferFilename(CodeBlock block, string? responseText, string? userMessage)
+    {
+        var ext = GetExtensionForLanguage(block.Language); // ".html", or ".txt" when unknown
+        bool ExtMatches(string f) => Path.GetExtension(f).Equals(ext, StringComparison.OrdinalIgnoreCase);
+
+        var fromUser = ExtractFilenames(userMessage);
+        var match = fromUser.FirstOrDefault(ExtMatches) ?? (fromUser.Count == 1 ? fromUser[0] : null);
+        if (match != null) return match;
+
+        match = ExtractFilenames(responseText).FirstOrDefault(ExtMatches);
+        return match;
     }
 
     private static string GetExtensionForLanguage(string lang) => lang.ToLowerInvariant() switch
