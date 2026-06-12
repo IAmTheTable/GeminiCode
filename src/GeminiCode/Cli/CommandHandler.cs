@@ -225,7 +225,19 @@ public class CommandHandler
         {
             var current = await _browser.GetCurrentModelAsync();
             Console.WriteLine($"Current model: {AnsiHelper.Bold}{current}{AnsiHelper.Reset}");
-            Console.WriteLine("Usage: /model <flash|pro|thinking>");
+            Console.WriteLine("Usage: /model <flash | flash-lite | pro>");
+            Console.WriteLine($"  {AnsiHelper.Dim}Thinking level (Standard/Extended) is a separate submenu — set it in the browser for now.{AnsiHelper.Reset}");
+            return;
+        }
+
+        // Thinking level (Standard/Extended) is a submenu in Gemini's new UI, not a top-level model.
+        // CLI switching for it is being wired up against the live submenu DOM.
+        var lowerMode = modeName.ToLowerInvariant().Trim();
+        if (lowerMode is "thinking" or "extended" or "standard")
+        {
+            Console.WriteLine($"{AnsiHelper.Yellow}'Thinking level' (Standard/Extended) is a submenu in Gemini's new UI.{AnsiHelper.Reset}");
+            Console.WriteLine("  CLI switching for it is being wired up against the live page.");
+            Console.WriteLine($"  For now, set it in the browser window: the {AnsiHelper.Bold}Flash ▾{AnsiHelper.Reset} menu → Thinking level.");
             return;
         }
 
