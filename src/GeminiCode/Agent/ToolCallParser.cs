@@ -99,6 +99,19 @@ public static class ToolCallParser
         @"\[\s*SKILL\s*:\s*([^\]]+?)\s*\](.*?)\[\s*/\s*SKILL\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex CopyTagPattern = new(
+        @"\[\s*COPY\s+([^\]>]+?)\s*>>>\s*([^\]]+?)\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex MoveTagPattern = new(
+        @"\[\s*MOVE\s+([^\]>]+?)\s*>>>\s*([^\]]+?)\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex MkdirTagPattern = new(
+        @"\[\s*MKDIR\s*\](.*?)\[\s*/\s*MKDIR\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex DeleteTagPattern = new(
+        @"\[\s*DELETE\s*\](.*?)\[\s*/\s*DELETE\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -224,6 +237,15 @@ public static class ToolCallParser
             toolCalls.Add(MakeToolCall("Skill", new() { ["name"] = skillName, ["input"] = input }));
             return "";
         });
+
+        textContent = CopyTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("CopyFile", new() { ["source"] = m.Groups[1].Value.Trim(), ["destination"] = m.Groups[2].Value.Trim() })); return ""; });
+        textContent = MoveTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("MoveFile", new() { ["source"] = m.Groups[1].Value.Trim(), ["destination"] = m.Groups[2].Value.Trim() })); return ""; });
+        textContent = MkdirTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("MakeDir", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = DeleteTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("DeleteFile", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
 
         // Strategy 2: XML <tool_call> format
         if (toolCalls.Count == 0)

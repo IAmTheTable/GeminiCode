@@ -62,6 +62,10 @@ public class Program
         toolRegistry.Register(new TreeTool(sandbox));
         toolRegistry.Register(new GitInfoTool(sandbox));
         toolRegistry.Register(new SkillTool(pluginRegistry));
+        toolRegistry.Register(new CopyFileTool(sandbox));
+        toolRegistry.Register(new MoveFileTool(sandbox));
+        toolRegistry.Register(new MakeDirTool(sandbox));
+        toolRegistry.Register(new DeleteFileTool(sandbox));
 
         // Initialize permissions
         var allowlist = new SessionAllowlist();

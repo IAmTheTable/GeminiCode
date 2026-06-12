@@ -87,6 +87,14 @@ the replacement text
 [GIT]blame path/to/file.py[/GIT]
 ```
 
+### File management
+```
+[COPY src/a.txt>>>src/b.txt]            (copy a file)
+[MOVE src/a.txt>>>src/b.txt]            (move/rename)
+[MKDIR]src/newdir[/MKDIR]               (create directory)
+[DELETE]src/old.txt[/DELETE]            (delete — moved to .gemini/trash, recoverable)
+```
+
 ## Rules — READ CAREFULLY
 
 1. **Always use action tags for file operations.** When you write code, wrap it in [FILE:name]...[/FILE]. When you want to execute something, use [RUN]...[/RUN]. The build system ONLY executes tagged actions.
