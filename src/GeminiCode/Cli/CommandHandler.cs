@@ -244,12 +244,9 @@ public class CommandHandler
             }
             else
             {
-                var available = doc.RootElement.GetProperty("available");
-                Console.WriteLine($"{AnsiHelper.Red}Mode '{modeName}' not found.{AnsiHelper.Reset}");
-                Console.Write("Available: ");
-                foreach (var item in available.EnumerateArray())
-                    Console.Write($"[{item.GetString()}] ");
-                Console.WriteLine();
+                var available = doc.RootElement.GetProperty("available").EnumerateArray()
+                    .Select(e => e.GetString() ?? "").Where(s => s.Length > 0);
+                Console.WriteLine(ErrorPresenter.ModelUnavailable(modeName!, available));
             }
         }
         catch

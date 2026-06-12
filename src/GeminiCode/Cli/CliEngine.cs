@@ -108,7 +108,12 @@ public class CliEngine
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{AnsiHelper.Red}Error: {ex.Message}{AnsiHelper.Reset}");
+                var category = ex is System.Runtime.InteropServices.COMException
+                               || ex.Message.Contains("WebView", StringComparison.OrdinalIgnoreCase)
+                               || ex.Message.Contains("ExecuteScript", StringComparison.OrdinalIgnoreCase)
+                    ? GenericErrorCategory.WebViewScript
+                    : GenericErrorCategory.Other;
+                Console.WriteLine(ErrorPresenter.Generic(category, ex.Message));
             }
 
             Console.Write($"\n{AnsiHelper.Green}>{AnsiHelper.Reset} ");
