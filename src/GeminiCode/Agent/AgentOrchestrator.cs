@@ -4,6 +4,7 @@ using GeminiCode.Browser;
 using GeminiCode.Cli;
 using GeminiCode.Config;
 using GeminiCode.Permissions;
+using GeminiCode.Plugins;
 using GeminiCode.Tools;
 
 namespace GeminiCode.Agent;
@@ -18,6 +19,7 @@ public class AgentOrchestrator
     private readonly Tools.PathSandbox _sandbox;
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
+    private readonly PluginRegistry _plugins;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -31,7 +33,8 @@ public class AgentOrchestrator
         AppSettings settings,
         Tools.PathSandbox sandbox,
         AgentProfile profile,
-        SessionContext sessionContext)
+        SessionContext sessionContext,
+        PluginRegistry pluginRegistry)
     {
         _browser = browser;
         _tools = tools;
@@ -41,6 +44,7 @@ public class AgentOrchestrator
         _sandbox = sandbox;
         _profile = profile;
         _sessionContext = sessionContext;
+        _plugins = pluginRegistry;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -62,7 +66,8 @@ public class AgentOrchestrator
         var initBaseline = await _browser.CaptureBaselineAsync();
         var profileContent = _profile.GetActiveProfileContent();
         var geminiMd = _profile.GetGeminiMdContent();
-        await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd));
+        var pluginInfo = _plugins.Plugins.Select(p => (p.Name, p.Description, p.Command, p.ArgHint));
+        await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd, pluginInfo));
         _conversation.MarkSystemPromptSent();
 
         var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);

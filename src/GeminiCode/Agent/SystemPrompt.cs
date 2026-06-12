@@ -192,8 +192,9 @@ Reply with exactly "Ready." to confirm you understand these instructions.
 """;
     }
 
-    /// <summary>Generate system prompt composed from base + profile + GEMINI.md.</summary>
-    public static string Generate(string workingDirectory, string profileContent, string? geminiMdContent)
+    /// <summary>Generate system prompt composed from base + profile + GEMINI.md + plugins.</summary>
+    public static string Generate(string workingDirectory, string profileContent, string? geminiMdContent,
+        IEnumerable<(string Name, string Description, string Command, string ArgHint)>? plugins = null)
     {
         var basePrompt = GenerateTemplate(workingDirectory);
 
@@ -212,6 +213,16 @@ Reply with exactly "Ready." to confirm you understand these instructions.
             sb.AppendLine();
             sb.AppendLine("## Project Instructions (GEMINI.md)");
             sb.AppendLine(geminiMdContent);
+        }
+
+        var pluginList = plugins?.ToList();
+        if (pluginList is { Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Available Skills");
+            sb.AppendLine("You can invoke a skill yourself with the tag `[SKILL:name]input[/SKILL]`. The build system returns the skill's instructions as a tool_result for you to follow. Use a skill when its description matches the user's request.");
+            foreach (var p in pluginList)
+                sb.AppendLine($"- **{p.Name}** — {p.Description} (also `/{p.Name}` for the user)");
         }
 
         return sb.ToString();

@@ -94,6 +94,11 @@ public static class ToolCallParser
         @"\[\s*GIT\s*\](.*?)\[\s*/\s*GIT\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // [SKILL:name]optional input[/SKILL]
+    private static readonly Regex SkillTagPattern = new(
+        @"\[\s*SKILL\s*:\s*([^\]]+?)\s*\](.*?)\[\s*/\s*SKILL\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -208,6 +213,15 @@ public static class ToolCallParser
             if (parts.Length > 1)
                 gitParams["args"] = parts[1];
             toolCalls.Add(MakeToolCall("GitInfo", gitParams));
+            return "";
+        });
+
+        // [SKILL:name]input[/SKILL]
+        textContent = SkillTagPattern.Replace(textContent, m =>
+        {
+            var skillName = m.Groups[1].Value.Trim();
+            var input = m.Groups[2].Value.Trim();
+            toolCalls.Add(MakeToolCall("Skill", new() { ["name"] = skillName, ["input"] = input }));
             return "";
         });
 

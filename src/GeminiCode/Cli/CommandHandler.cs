@@ -1,8 +1,8 @@
 // src/GeminiCode/Cli/CommandHandler.cs
 using GeminiCode.Browser;
 using GeminiCode.Agent;
-using GeminiCode.Agent.Workflows;
 using GeminiCode.Permissions;
+using GeminiCode.Plugins;
 using GeminiCode.Tools;
 
 namespace GeminiCode.Cli;
@@ -16,6 +16,8 @@ public class CommandHandler
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
     private readonly WorkflowRunner _workflowRunner;
+    private readonly PluginRegistry _plugins;
+    private readonly ToolRegistry _toolRegistry;
 
     public CommandHandler(
         BrowserBridge browser,
@@ -24,7 +26,9 @@ public class CommandHandler
         PathSandbox sandbox,
         AgentProfile profile,
         SessionContext sessionContext,
-        WorkflowRunner workflowRunner)
+        WorkflowRunner workflowRunner,
+        PluginRegistry plugins,
+        ToolRegistry toolRegistry)
     {
         _browser = browser;
         _conversation = conversation;
@@ -33,6 +37,8 @@ public class CommandHandler
         _profile = profile;
         _sessionContext = sessionContext;
         _workflowRunner = workflowRunner;
+        _plugins = plugins;
+        _toolRegistry = toolRegistry;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
@@ -93,16 +99,12 @@ public class CommandHandler
             case "/context":
                 HandleShowContext();
                 return true;
-            case "/simplify":
-                await HandleSimplifyAsync(ct);
-                return true;
-            case "/brainstorm":
-                await HandleBrainstormAsync(arg, ct);
-                return true;
             case "/exit":
                 HandleExit();
                 return true;
             default:
+                if (await TryRunPluginAsync(command, arg, ct))
+                    return true;
                 Console.WriteLine($"Unknown command: {command}. Type /help for available commands.");
                 return true;
         }
@@ -127,8 +129,6 @@ public class CommandHandler
               /save            — Save session context to .gemini/session-context.md
               /restore         — Restore previous session context in new chat
               /context         — Show current session context
-              /simplify        — Review and fix changed code (reuse, quality, efficiency)
-              /brainstorm <topic> — Guided brainstorming for features and designs
               /exit            — Quit GeminiCode
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
@@ -336,25 +336,14 @@ public class CommandHandler
         Console.WriteLine(md);
     }
 
-    private async Task HandleSimplifyAsync(CancellationToken ct)
+    private async Task<bool> TryRunPluginAsync(string command, string? arg, CancellationToken ct)
     {
-        var workflow = SimplifyWorkflow.Create();
-        var variables = new Dictionary<string, string>();
-        await _workflowRunner.RunAsync(workflow, variables, ct);
-    }
+        var manifest = _plugins.ByCommand(command);
+        if (manifest == null) return false;
 
-    private async Task HandleBrainstormAsync(string? topic, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(topic))
-        {
-            Console.WriteLine("Usage: /brainstorm <topic or feature description>");
-            Console.WriteLine("  Example: /brainstorm add user authentication with JWT");
-            return;
-        }
-
-        var workflow = BrainstormWorkflow.Create(topic);
-        var variables = new Dictionary<string, string>();
-        await _workflowRunner.RunAsync(workflow, variables, ct);
+        var variables = new Dictionary<string, string> { ["input"] = arg ?? "" };
+        await _workflowRunner.RunAsync(manifest.ToWorkflow(), variables, ct);
+        return true;
     }
 
     private void HandleExit()
