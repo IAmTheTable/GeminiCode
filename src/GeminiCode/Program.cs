@@ -4,6 +4,7 @@ using GeminiCode.Browser;
 using GeminiCode.Cli;
 using GeminiCode.Config;
 using GeminiCode.Permissions;
+using GeminiCode.Plugins;
 using GeminiCode.Tools;
 
 namespace GeminiCode;
@@ -39,6 +40,16 @@ public class Program
         // Initialize agent profile
         var agentProfile = new AgentProfile(workDir);
 
+        // Initialize plugins (shipped + user-dropped)
+        var shippedPluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
+        var userPluginsDir = Path.Combine(workDir, ".gemini", "plugins");
+        var pluginLoader = new PluginLoader(new[] { shippedPluginsDir, userPluginsDir });
+        var pluginRegistry = new PluginRegistry(pluginLoader);
+        if (pluginRegistry.Plugins.Count > 0)
+            Console.WriteLine($"{AnsiHelper.Dim}Loaded {pluginRegistry.Plugins.Count} plugin(s): {string.Join(", ", pluginRegistry.Plugins.Select(p => p.Name))}{AnsiHelper.Reset}");
+        foreach (var w in pluginRegistry.Warnings)
+            Console.WriteLine($"{AnsiHelper.Yellow}Plugin warning: {w}{AnsiHelper.Reset}");
+
         // Initialize tools
         var toolRegistry = new ToolRegistry();
         toolRegistry.Register(new ReadFileTool(sandbox));
@@ -50,6 +61,14 @@ public class Program
         toolRegistry.Register(new GrepTool(sandbox));
         toolRegistry.Register(new TreeTool(sandbox));
         toolRegistry.Register(new GitInfoTool(sandbox));
+        toolRegistry.Register(new SkillTool(pluginRegistry));
+        toolRegistry.Register(new CopyFileTool(sandbox));
+        toolRegistry.Register(new MoveFileTool(sandbox));
+        toolRegistry.Register(new MakeDirTool(sandbox));
+        toolRegistry.Register(new DeleteFileTool(sandbox));
+        toolRegistry.Register(new GlobTool(sandbox));
+        var todoStore = new TodoStore();
+        toolRegistry.Register(new TodoTool(todoStore));
 
         // Initialize permissions
         var allowlist = new SessionAllowlist();
@@ -119,12 +138,13 @@ public class Program
         // Initialize agent
         var conversation = new ConversationManager();
         var sessionContext = new SessionContext(workDir, agentProfile.ActiveProfileName);
-        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext);
+        var usage = new UsageTracker();
+        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext, pluginRegistry, usage);
 
         // Initialize workflow runner, context processor, and CLI
         var workflowRunner = new WorkflowRunner(orchestrator, browser);
         var contextProcessor = new ContextProcessor(sandbox);
-        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext, workflowRunner);
+        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext, workflowRunner, pluginRegistry, toolRegistry, usage);
         var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works

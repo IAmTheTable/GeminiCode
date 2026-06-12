@@ -100,4 +100,14 @@ public class ToolCallParserTests
         Assert.Single(result.ToolCalls);
         Assert.Equal("ListFiles", result.ToolCalls[0].Name);
     }
+
+    [Fact]
+    public void Parse_SkillTag_EmitsSkillToolCall()
+    {
+        var result = ToolCallParser.Parse("Let me brainstorm. [SKILL:brainstorm]add auth[/SKILL]");
+        var call = Assert.Single(result.ToolCalls);
+        Assert.Equal("Skill", call.Name);
+        Assert.Equal("brainstorm", call.Parameters["name"].GetString());
+        Assert.Equal("add auth", call.Parameters["input"].GetString());
+    }
 }

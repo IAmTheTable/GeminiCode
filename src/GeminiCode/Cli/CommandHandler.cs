@@ -1,8 +1,8 @@
 // src/GeminiCode/Cli/CommandHandler.cs
 using GeminiCode.Browser;
 using GeminiCode.Agent;
-using GeminiCode.Agent.Workflows;
 using GeminiCode.Permissions;
+using GeminiCode.Plugins;
 using GeminiCode.Tools;
 
 namespace GeminiCode.Cli;
@@ -16,6 +16,9 @@ public class CommandHandler
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
     private readonly WorkflowRunner _workflowRunner;
+    private readonly PluginRegistry _plugins;
+    private readonly ToolRegistry _toolRegistry;
+    private readonly UsageTracker _usage;
 
     public CommandHandler(
         BrowserBridge browser,
@@ -24,7 +27,10 @@ public class CommandHandler
         PathSandbox sandbox,
         AgentProfile profile,
         SessionContext sessionContext,
-        WorkflowRunner workflowRunner)
+        WorkflowRunner workflowRunner,
+        PluginRegistry plugins,
+        ToolRegistry toolRegistry,
+        UsageTracker usage)
     {
         _browser = browser;
         _conversation = conversation;
@@ -33,6 +39,9 @@ public class CommandHandler
         _profile = profile;
         _sessionContext = sessionContext;
         _workflowRunner = workflowRunner;
+        _plugins = plugins;
+        _toolRegistry = toolRegistry;
+        _usage = usage;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
@@ -93,16 +102,30 @@ public class CommandHandler
             case "/context":
                 HandleShowContext();
                 return true;
-            case "/simplify":
-                await HandleSimplifyAsync(ct);
-                return true;
-            case "/brainstorm":
-                await HandleBrainstormAsync(arg, ct);
-                return true;
             case "/exit":
                 HandleExit();
                 return true;
+            case "/plugins":
+                PrintPlugins();
+                return true;
+            case "/reload":
+                HandleReload();
+                return true;
+            case "/tools":
+                PrintTools();
+                return true;
+            case "/init":
+                HandleInit();
+                return true;
+            case "/compact":
+                await HandleCompactAsync();
+                return true;
+            case "/usage":
+                Console.WriteLine(_usage.Breakdown());
+                return true;
             default:
+                if (await TryRunPluginAsync(command, arg, ct))
+                    return true;
                 Console.WriteLine($"Unknown command: {command}. Type /help for available commands.");
                 return true;
         }
@@ -127,9 +150,13 @@ public class CommandHandler
               /save            — Save session context to .gemini/session-context.md
               /restore         — Restore previous session context in new chat
               /context         — Show current session context
-              /simplify        — Review and fix changed code (reuse, quality, efficiency)
-              /brainstorm <topic> — Guided brainstorming for features and designs
               /exit            — Quit GeminiCode
+              /plugins         — List loaded plugins
+              /reload          — Re-scan the plugins folder
+              /tools           — List available tools and risk
+              /init            — Create a starter GEMINI.md
+              /compact         — Summarize context and start fresh
+              /usage           — Show estimated token usage breakdown
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
             {Agent.ContextProcessor.GetHelpText()}
@@ -139,6 +166,15 @@ public class CommandHandler
               > what changed? @diff
               > refactor @grep "TODO" include=*.cs
             """);
+        if (_plugins.Plugins.Count > 0)
+        {
+            Console.WriteLine($"\n{AnsiHelper.Bold}Plugins (skills):{AnsiHelper.Reset}");
+            foreach (var p in _plugins.Plugins)
+            {
+                var hint = string.IsNullOrEmpty(p.ArgHint) ? "" : $" {p.ArgHint}";
+                Console.WriteLine($"  {p.Command}{hint,-20} — {p.Description}");
+            }
+        }
     }
 
     private async Task HandleNewChatAsync()
@@ -336,25 +372,78 @@ public class CommandHandler
         Console.WriteLine(md);
     }
 
-    private async Task HandleSimplifyAsync(CancellationToken ct)
+    private void PrintPlugins()
     {
-        var workflow = SimplifyWorkflow.Create();
-        var variables = new Dictionary<string, string>();
-        await _workflowRunner.RunAsync(workflow, variables, ct);
+        if (_plugins.Plugins.Count == 0) { Console.WriteLine("No plugins loaded. Drop a folder with SKILL.md into .gemini/plugins/."); return; }
+        Console.WriteLine($"{AnsiHelper.Bold}Loaded plugins:{AnsiHelper.Reset}");
+        foreach (var p in _plugins.Plugins)
+            Console.WriteLine($"  {p.Command,-16} {p.Description} {AnsiHelper.Dim}({(p.IsSingleShot ? "skill" : $"{p.Phases.Count}-phase")}){AnsiHelper.Reset}");
     }
 
-    private async Task HandleBrainstormAsync(string? topic, CancellationToken ct)
+    private void HandleReload()
     {
-        if (string.IsNullOrWhiteSpace(topic))
-        {
-            Console.WriteLine("Usage: /brainstorm <topic or feature description>");
-            Console.WriteLine("  Example: /brainstorm add user authentication with JWT");
-            return;
-        }
+        var (added, removed) = _plugins.Reload();
+        Console.WriteLine($"{AnsiHelper.Green}Plugins reloaded: +{added} / -{removed}. Now {_plugins.Plugins.Count} loaded.{AnsiHelper.Reset}");
+        foreach (var w in _plugins.Warnings)
+            Console.WriteLine($"{AnsiHelper.Yellow}  {w}{AnsiHelper.Reset}");
+    }
 
-        var workflow = BrainstormWorkflow.Create(topic);
-        var variables = new Dictionary<string, string>();
-        await _workflowRunner.RunAsync(workflow, variables, ct);
+    private void PrintTools()
+    {
+        Console.WriteLine($"{AnsiHelper.Bold}Available tools:{AnsiHelper.Reset}");
+        foreach (var name in _toolRegistry.ToolNames.OrderBy(n => n))
+        {
+            var tool = _toolRegistry.GetTool(name)!;
+            Console.WriteLine($"  {name,-14} {AnsiHelper.Dim}{Permissions.RiskAssessor.GetRiskLabel(tool)}{AnsiHelper.Reset}");
+        }
+    }
+
+    private void HandleInit()
+    {
+        var path = Path.Combine(_sandbox.WorkingDirectory, "GEMINI.md");
+        if (File.Exists(path)) { Console.WriteLine($"{AnsiHelper.Yellow}GEMINI.md already exists. Not overwriting.{AnsiHelper.Reset}"); return; }
+        var template = """
+            # Project Instructions (GEMINI.md)
+
+            ## Overview
+            <one paragraph: what this project is>
+
+            ## Conventions
+            - <coding conventions, style, frameworks>
+
+            ## Commands
+            - Build: <command>
+            - Test: <command>
+            - Run: <command>
+
+            ## Notes
+            <anything GeminiCode should always keep in mind>
+            """;
+        File.WriteAllText(path, template);
+        Console.WriteLine($"{AnsiHelper.Green}Created {path}. Edit it to guide GeminiCode.{AnsiHelper.Reset}");
+    }
+
+    private async Task HandleCompactAsync()
+    {
+        Console.WriteLine($"{AnsiHelper.Dim}Compacting: saving context, starting fresh chat, restoring summary...{AnsiHelper.Reset}");
+        _sessionContext.SaveToFile();
+        await _browser.StartNewChatAsync();
+        await _browser.WaitForPageSettleAsync();
+        _conversation.Reset();
+        var filePath = _sessionContext.GetFilePath();
+        if (File.Exists(filePath))
+            await _browser.SendMessageAsync("Previous session context:\n\n" + File.ReadAllText(filePath));
+        Console.WriteLine($"{AnsiHelper.Green}Compacted. New chat seeded with prior context summary.{AnsiHelper.Reset}");
+    }
+
+    private async Task<bool> TryRunPluginAsync(string command, string? arg, CancellationToken ct)
+    {
+        var manifest = _plugins.ByCommand(command);
+        if (manifest == null) return false;
+
+        var variables = new Dictionary<string, string> { ["input"] = arg ?? "" };
+        await _workflowRunner.RunAsync(manifest.ToWorkflow(), variables, ct);
+        return true;
     }
 
     private void HandleExit()

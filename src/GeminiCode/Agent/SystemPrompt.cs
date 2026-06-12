@@ -87,6 +87,24 @@ the replacement text
 [GIT]blame path/to/file.py[/GIT]
 ```
 
+### File management
+```
+[COPY src/a.txt>>>src/b.txt]            (copy a file)
+[MOVE src/a.txt>>>src/b.txt]            (move/rename)
+[MKDIR]src/newdir[/MKDIR]               (create directory)
+[DELETE]src/old.txt[/DELETE]            (delete — moved to .gemini/trash, recoverable)
+[GLOB]**/*.cs[/GLOB]                    (find files by glob pattern)
+```
+
+### Task list (keep the user informed on multi-step work)
+```
+[TODO]
+- [x] completed step
+- [~] in-progress step
+- [ ] pending step
+[/TODO]
+```
+
 ## Rules — READ CAREFULLY
 
 1. **Always use action tags for file operations.** When you write code, wrap it in [FILE:name]...[/FILE]. When you want to execute something, use [RUN]...[/RUN]. The build system ONLY executes tagged actions.
@@ -192,8 +210,9 @@ Reply with exactly "Ready." to confirm you understand these instructions.
 """;
     }
 
-    /// <summary>Generate system prompt composed from base + profile + GEMINI.md.</summary>
-    public static string Generate(string workingDirectory, string profileContent, string? geminiMdContent)
+    /// <summary>Generate system prompt composed from base + profile + GEMINI.md + plugins.</summary>
+    public static string Generate(string workingDirectory, string profileContent, string? geminiMdContent,
+        IEnumerable<(string Name, string Description, string Command, string ArgHint)>? plugins = null)
     {
         var basePrompt = GenerateTemplate(workingDirectory);
 
@@ -212,6 +231,16 @@ Reply with exactly "Ready." to confirm you understand these instructions.
             sb.AppendLine();
             sb.AppendLine("## Project Instructions (GEMINI.md)");
             sb.AppendLine(geminiMdContent);
+        }
+
+        var pluginList = plugins?.ToList();
+        if (pluginList is { Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Available Skills");
+            sb.AppendLine("You can invoke a skill yourself with the tag `[SKILL:name]input[/SKILL]`. The build system returns the skill's instructions as a tool_result for you to follow. Use a skill when its description matches the user's request.");
+            foreach (var p in pluginList)
+                sb.AppendLine($"- **{p.Name}** — {p.Description} (also `/{p.Name}` for the user)");
         }
 
         return sb.ToString();

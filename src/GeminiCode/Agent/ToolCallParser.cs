@@ -94,6 +94,34 @@ public static class ToolCallParser
         @"\[\s*GIT\s*\](.*?)\[\s*/\s*GIT\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // [SKILL:name]optional input[/SKILL]
+    private static readonly Regex SkillTagPattern = new(
+        @"\[\s*SKILL\s*:\s*([^\]]+?)\s*\](.*?)\[\s*/\s*SKILL\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex CopyTagPattern = new(
+        @"\[\s*COPY\s+([^\]>]+?)\s*>>>\s*([^\]]+?)\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex MoveTagPattern = new(
+        @"\[\s*MOVE\s+([^\]>]+?)\s*>>>\s*([^\]]+?)\s*\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex MkdirTagPattern = new(
+        @"\[\s*MKDIR\s*\](.*?)\[\s*/\s*MKDIR\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex DeleteTagPattern = new(
+        @"\[\s*DELETE\s*\](.*?)\[\s*/\s*DELETE\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [GLOB]**/*.cs[/GLOB]
+    private static readonly Regex GlobTagPattern = new(
+        @"\[\s*GLOB\s*\](.*?)\[\s*/\s*GLOB\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // [TODO]- [x] done\n- [ ] pending[/TODO]
+    private static readonly Regex TodoTagPattern = new(
+        @"\[\s*TODO\s*\](.*?)\[\s*/\s*TODO\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -210,6 +238,28 @@ public static class ToolCallParser
             toolCalls.Add(MakeToolCall("GitInfo", gitParams));
             return "";
         });
+
+        // [SKILL:name]input[/SKILL]
+        textContent = SkillTagPattern.Replace(textContent, m =>
+        {
+            var skillName = m.Groups[1].Value.Trim();
+            var input = m.Groups[2].Value.Trim();
+            toolCalls.Add(MakeToolCall("Skill", new() { ["name"] = skillName, ["input"] = input }));
+            return "";
+        });
+
+        textContent = CopyTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("CopyFile", new() { ["source"] = m.Groups[1].Value.Trim(), ["destination"] = m.Groups[2].Value.Trim() })); return ""; });
+        textContent = MoveTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("MoveFile", new() { ["source"] = m.Groups[1].Value.Trim(), ["destination"] = m.Groups[2].Value.Trim() })); return ""; });
+        textContent = MkdirTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("MakeDir", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = DeleteTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("DeleteFile", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = GlobTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("Glob", new() { ["pattern"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = TodoTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("Todo", new() { ["items"] = m.Groups[1].Value.Trim() })); return ""; });
 
         // Strategy 2: XML <tool_call> format
         if (toolCalls.Count == 0)

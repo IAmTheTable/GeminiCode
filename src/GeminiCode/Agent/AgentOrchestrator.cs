@@ -4,6 +4,7 @@ using GeminiCode.Browser;
 using GeminiCode.Cli;
 using GeminiCode.Config;
 using GeminiCode.Permissions;
+using GeminiCode.Plugins;
 using GeminiCode.Tools;
 
 namespace GeminiCode.Agent;
@@ -18,6 +19,8 @@ public class AgentOrchestrator
     private readonly Tools.PathSandbox _sandbox;
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
+    private readonly PluginRegistry _plugins;
+    private readonly UsageTracker _usage;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -31,7 +34,9 @@ public class AgentOrchestrator
         AppSettings settings,
         Tools.PathSandbox sandbox,
         AgentProfile profile,
-        SessionContext sessionContext)
+        SessionContext sessionContext,
+        PluginRegistry pluginRegistry,
+        UsageTracker usage)
     {
         _browser = browser;
         _tools = tools;
@@ -41,6 +46,8 @@ public class AgentOrchestrator
         _sandbox = sandbox;
         _profile = profile;
         _sessionContext = sessionContext;
+        _plugins = pluginRegistry;
+        _usage = usage;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -62,10 +69,15 @@ public class AgentOrchestrator
         var initBaseline = await _browser.CaptureBaselineAsync();
         var profileContent = _profile.GetActiveProfileContent();
         var geminiMd = _profile.GetGeminiMdContent();
-        await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd));
+        var pluginInfo = _plugins.Plugins.Select(p => (p.Name, p.Description, p.Command, p.ArgHint));
+        await _browser.SendMessageAsync(SystemPrompt.Generate(_sandbox.WorkingDirectory, profileContent, geminiMd, pluginInfo));
         _conversation.MarkSystemPromptSent();
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);
+        GeminiResponse? response;
+        using (Spinner.Start("Initializing"))
+        {
+            response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, initBaseline.textLen, initBaseline.preCount);
+        }
         if (response != null)
         {
             Console.WriteLine($"{AnsiHelper.Green}Agent ready.{AnsiHelper.Reset}");
@@ -97,12 +109,17 @@ public class AgentOrchestrator
         await DetectModelChangeAsync("pre-send");
 
         var message = _conversation.PrepareMessage(userMessage);
+        _usage.RecordSent(message);
 
         // Capture baseline BEFORE sending so we can detect only NEW content
         var baseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(message);
 
-        var response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
+        GeminiResponse? response;
+        using (Spinner.Start("Waiting for Gemini"))
+        {
+            response = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, baseline.textLen, baseline.preCount);
+        }
         if (response == null)
         {
             // Timeout could be caused by a limit — check again
@@ -123,6 +140,8 @@ public class AgentOrchestrator
             return null;
         }
 
+        _usage.RecordReceived(response.Text);
+
         // Check model after response — Gemini may have switched mid-conversation
         var modelChanged = await DetectModelChangeAsync("post-response");
 
@@ -132,6 +151,7 @@ public class AgentOrchestrator
         if (modelChanged)
             await ReorientAfterModelSwitchAsync(ct);
 
+        Console.WriteLine($"{AnsiHelper.Dim}{_usage.Footer()}{AnsiHelper.Reset}");
         return result;
     }
 
@@ -209,7 +229,11 @@ public class AgentOrchestrator
         await _browser.SendMessageAsync(reorientation);
 
         // Wait for acknowledgment but don't process it — it's just a system message
-        var ack = await _browser.WaitForResponseAsync(30, ct, baseline.textLen, baseline.preCount);
+        GeminiResponse? ack;
+        using (Spinner.Start("Re-orienting"))
+        {
+            ack = await _browser.WaitForResponseAsync(30, ct, baseline.textLen, baseline.preCount);
+        }
         if (ack != null)
             Console.WriteLine($"{AnsiHelper.Green}New model oriented.{AnsiHelper.Reset}");
         else
@@ -460,10 +484,15 @@ public class AgentOrchestrator
         // Send results back to Gemini
         Console.WriteLine($"\n  {AnsiHelper.Dim}Sending results to Gemini...{AnsiHelper.Reset}");
         var combinedResults = _conversation.PrepareToolResults(results);
+        _usage.RecordSent(combinedResults);
         var followBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(combinedResults);
 
-        var followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
+        GeminiResponse? followUp;
+        using (Spinner.Start("Waiting for Gemini"))
+        {
+            followUp = await _browser.WaitForResponseAsync(_settings.ResponseTimeoutSeconds, ct, followBaseline.textLen, followBaseline.preCount);
+        }
         if (followUp == null)
         {
             var limit = await _browser.CheckForLimitAsync();
@@ -476,6 +505,8 @@ public class AgentOrchestrator
             HandleLimitDetected(followUp.Limit);
             return null;
         }
+
+        _usage.RecordReceived(followUp.Text);
 
         return await ProcessResponseAsync(followUp, ct);
     }
