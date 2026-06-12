@@ -67,6 +67,8 @@ public class Program
         toolRegistry.Register(new MakeDirTool(sandbox));
         toolRegistry.Register(new DeleteFileTool(sandbox));
         toolRegistry.Register(new GlobTool(sandbox));
+        var todoStore = new TodoStore();
+        toolRegistry.Register(new TodoTool(todoStore));
 
         // Initialize permissions
         var allowlist = new SessionAllowlist();

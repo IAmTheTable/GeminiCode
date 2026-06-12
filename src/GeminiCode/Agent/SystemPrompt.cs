@@ -96,6 +96,15 @@ the replacement text
 [GLOB]**/*.cs[/GLOB]                    (find files by glob pattern)
 ```
 
+### Task list (keep the user informed on multi-step work)
+```
+[TODO]
+- [x] completed step
+- [~] in-progress step
+- [ ] pending step
+[/TODO]
+```
+
 ## Rules — READ CAREFULLY
 
 1. **Always use action tags for file operations.** When you write code, wrap it in [FILE:name]...[/FILE]. When you want to execute something, use [RUN]...[/RUN]. The build system ONLY executes tagged actions.

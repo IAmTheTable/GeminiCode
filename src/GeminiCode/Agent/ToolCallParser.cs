@@ -117,6 +117,11 @@ public static class ToolCallParser
         @"\[\s*GLOB\s*\](.*?)\[\s*/\s*GLOB\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // [TODO]- [x] done\n- [ ] pending[/TODO]
+    private static readonly Regex TodoTagPattern = new(
+        @"\[\s*TODO\s*\](.*?)\[\s*/\s*TODO\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -253,6 +258,8 @@ public static class ToolCallParser
         { toolCalls.Add(MakeToolCall("DeleteFile", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
         textContent = GlobTagPattern.Replace(textContent, m =>
         { toolCalls.Add(MakeToolCall("Glob", new() { ["pattern"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = TodoTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("Todo", new() { ["items"] = m.Groups[1].Value.Trim() })); return ""; });
 
         // Strategy 2: XML <tool_call> format
         if (toolCalls.Count == 0)
