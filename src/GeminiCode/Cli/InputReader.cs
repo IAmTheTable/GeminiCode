@@ -2,9 +2,10 @@
 namespace GeminiCode.Cli;
 
 /// <summary>
-/// Custom input reader with live autocomplete for / commands and @ contexts.
-/// Shows completions immediately when typing / or @, filters as you type.
-/// Up/Down to navigate, Tab/Right to accept, Escape to dismiss.
+/// Interactive console input with multi-line editing, command/@ autocomplete, shell-style
+/// history (Up/Down with draft preservation), undo/redo (Ctrl+Z / Ctrl+Y), and clipboard
+/// paste (Ctrl+V — text, or an image which is attached as @image). Backed by the pure
+/// LineEditor + InputHistory models; this layer only handles keys and console rendering.
 /// </summary>
 public class InputReader
 {
@@ -39,17 +40,10 @@ public class InputReader
         new("/exit",             "Quit GeminiCode"),
     ];
 
-    /// <summary>Append dynamic commands (e.g. dropped plugins) to the completion list.</summary>
-    public static void AddCommands(IEnumerable<(string Text, string Description)> commands)
-    {
-        foreach (var (text, desc) in commands)
-            if (!SlashCommands.Any(c => c.Text.Equals(text, StringComparison.OrdinalIgnoreCase)))
-                SlashCommands.Add(new CompletionItem(text, desc));
-    }
-
     private static readonly CompletionItem[] AtContexts =
     [
         new("@file ",       "Attach file contents"),
+        new("@image ",      "Attach an image (or Ctrl+V an image)"),
         new("@tree",        "Attach directory tree"),
         new("@tree depth=", "Tree with custom depth"),
         new("@git status",  "Attach git status"),
@@ -65,215 +59,236 @@ public class InputReader
 
     private record CompletionItem(string Text, string Description);
 
-    public static string? ReadLine()
+    /// <summary>Returns clipboard text, or null. Set by the host (marshals to the WinForms STA thread).</summary>
+    public static Func<string?>? ClipboardTextProvider;
+    /// <summary>Saves a clipboard image to a temp file and returns its path, or null. Set by the host.</summary>
+    public static Func<string?>? ClipboardImageProvider;
+
+    private static readonly InputHistory History = new();
+
+    /// <summary>Append dynamic commands (e.g. dropped plugins) to the completion list.</summary>
+    public static void AddCommands(IEnumerable<(string Text, string Description)> commands)
     {
-        var buffer = new List<char>();
-        var cursorPos = 0;
-        var selectedIndex = -1; // -1 = no selection in popup
-        CompletionItem[]? matches = null;
-        var popupVisible = false;
-        var popupLineCount = 0;
-        _scrollOffset = 0;
-
-        while (true)
-        {
-            var key = Console.ReadKey(intercept: true);
-
-            switch (key.Key)
-            {
-                case ConsoleKey.Enter:
-                    // If a completion is selected, accept it
-                    if (popupVisible && selectedIndex >= 0 && matches != null && selectedIndex < matches.Length)
-                    {
-                        AcceptCompletion(buffer, ref cursorPos, matches[selectedIndex].Text);
-                        ClearPopup(ref popupLineCount);
-                        popupVisible = false;
-                        matches = null;
-                        selectedIndex = -1;
-                        RedrawLine(buffer, cursorPos);
-                        break;
-                    }
-                    // Otherwise submit
-                    ClearPopup(ref popupLineCount);
-                    Console.WriteLine();
-                    return new string(buffer.ToArray());
-
-                case ConsoleKey.Tab:
-                    // Accept current selection or first match
-                    if (popupVisible && matches != null && matches.Length > 0)
-                    {
-                        var idx = selectedIndex >= 0 ? selectedIndex : 0;
-                        AcceptCompletion(buffer, ref cursorPos, matches[idx].Text);
-                        ClearPopup(ref popupLineCount);
-                        popupVisible = false;
-                        matches = null;
-                        selectedIndex = -1;
-                        RedrawLine(buffer, cursorPos);
-                    }
-                    break;
-
-                case ConsoleKey.DownArrow:
-                    if (popupVisible && matches != null && matches.Length > 0)
-                    {
-                        selectedIndex = Math.Min(selectedIndex + 1, matches.Length - 1);
-                        ShowPopup(matches, selectedIndex, ref popupLineCount);
-                    }
-                    break;
-
-                case ConsoleKey.UpArrow:
-                    if (popupVisible && matches != null)
-                    {
-                        selectedIndex = Math.Max(selectedIndex - 1, 0);
-                        ShowPopup(matches, selectedIndex, ref popupLineCount);
-                    }
-                    break;
-
-                case ConsoleKey.Escape:
-                    if (popupVisible)
-                    {
-                        ClearPopup(ref popupLineCount);
-                        popupVisible = false;
-                        matches = null;
-                        selectedIndex = -1;
-                    }
-                    else
-                    {
-                        buffer.Clear();
-                        cursorPos = 0;
-                        RedrawLine(buffer, cursorPos);
-                    }
-                    break;
-
-                case ConsoleKey.Backspace:
-                    if (cursorPos > 0)
-                    {
-                        buffer.RemoveAt(cursorPos - 1);
-                        cursorPos--;
-                        RedrawLine(buffer, cursorPos);
-                        UpdatePopup(buffer, cursorPos, ref matches, ref selectedIndex, ref popupVisible, ref popupLineCount);
-                    }
-                    break;
-
-                case ConsoleKey.Delete:
-                    if (cursorPos < buffer.Count)
-                    {
-                        buffer.RemoveAt(cursorPos);
-                        RedrawLine(buffer, cursorPos);
-                        UpdatePopup(buffer, cursorPos, ref matches, ref selectedIndex, ref popupVisible, ref popupLineCount);
-                    }
-                    break;
-
-                case ConsoleKey.LeftArrow:
-                    if (cursorPos > 0)
-                    {
-                        cursorPos--;
-                        Console.SetCursorPosition(PromptWidth + cursorPos, Console.CursorTop);
-                    }
-                    break;
-
-                case ConsoleKey.RightArrow:
-                    // Accept completion with right arrow if popup is showing
-                    if (popupVisible && matches != null && matches.Length > 0 && selectedIndex >= 0)
-                    {
-                        AcceptCompletion(buffer, ref cursorPos, matches[selectedIndex].Text);
-                        ClearPopup(ref popupLineCount);
-                        popupVisible = false;
-                        matches = null;
-                        selectedIndex = -1;
-                        RedrawLine(buffer, cursorPos);
-                    }
-                    else if (cursorPos < buffer.Count)
-                    {
-                        cursorPos++;
-                        Console.SetCursorPosition(PromptWidth + cursorPos, Console.CursorTop);
-                    }
-                    break;
-
-                case ConsoleKey.Home:
-                    cursorPos = 0;
-                    Console.SetCursorPosition(PromptWidth, Console.CursorTop);
-                    break;
-
-                case ConsoleKey.End:
-                    cursorPos = buffer.Count;
-                    Console.SetCursorPosition(PromptWidth + cursorPos, Console.CursorTop);
-                    break;
-
-                default:
-                    if (key.KeyChar >= 32)
-                    {
-                        buffer.Insert(cursorPos, key.KeyChar);
-                        cursorPos++;
-                        RedrawLine(buffer, cursorPos);
-                        UpdatePopup(buffer, cursorPos, ref matches, ref selectedIndex, ref popupVisible, ref popupLineCount);
-                    }
-                    break;
-            }
-        }
+        foreach (var (text, desc) in commands)
+            if (!SlashCommands.Any(c => c.Text.Equals(text, StringComparison.OrdinalIgnoreCase)))
+                SlashCommands.Add(new CompletionItem(text, desc));
     }
 
     private const int PromptWidth = 2; // "> "
     private const int MaxPopupItems = 10;
-    private static int _scrollOffset; // first visible item index when the list scrolls
+    private static int _scrollOffset;
 
-    /// <summary>Check if we should show/hide/update the popup based on current input.</summary>
-    private static void UpdatePopup(List<char> buffer, int cursorPos,
-        ref CompletionItem[]? matches, ref int selectedIndex,
-        ref bool popupVisible, ref int popupLineCount)
+    public static string? ReadLine()
     {
-        var text = new string(buffer.ToArray());
-        var prefix = FindActiveToken(text, cursorPos);
-
-        if (prefix == null)
-        {
-            if (popupVisible)
-            {
-                ClearPopup(ref popupLineCount);
-                popupVisible = false;
-            }
-            matches = null;
-            selectedIndex = -1;
-            return;
-        }
-
-        matches = GetMatches(prefix);
-        if (matches.Length == 0)
-        {
-            if (popupVisible) ClearPopup(ref popupLineCount);
-            popupVisible = false;
-            selectedIndex = -1;
-            return;
-        }
-
-        selectedIndex = 0;
+        var editor = new LineEditor();
+        CompletionItem[]? matches = null;
+        var selectedIndex = -1;
+        var popupVisible = false;
         _scrollOffset = 0;
-        popupVisible = true;
-        ShowPopup(matches, selectedIndex, ref popupLineCount);
+
+        var anchorTop = Console.CursorTop;   // the row where the caller printed "> "
+        var lastRenderRows = 1;
+
+        void RefreshPopup()
+        {
+            var line = editor.CursorRow < editor.Lines.Count ? editor.Lines[editor.CursorRow] : "";
+            var prefix = FindActiveToken(line, editor.CursorCol, editor.CursorRow);
+            if (prefix == null) { matches = null; selectedIndex = -1; popupVisible = false; return; }
+            var found = GetMatches(prefix);
+            if (found.Length == 0) { matches = null; selectedIndex = -1; popupVisible = false; return; }
+            matches = found;
+            selectedIndex = 0;
+            _scrollOffset = 0;
+            popupVisible = true;
+        }
+
+        void Render()
+        {
+            var lines = editor.Lines;
+            var popupRows = popupVisible && matches != null ? PopupRowCount(matches.Length) : 0;
+            var needed = lines.Count + popupRows;
+
+            // Scroll the buffer if the input + popup would run off the bottom.
+            var overflow = (anchorTop + needed) - Console.BufferHeight;
+            if (overflow > 0)
+            {
+                Console.SetCursorPosition(0, Console.BufferHeight - 1);
+                for (int i = 0; i < overflow; i++) Console.Write('\n');
+                anchorTop = Math.Max(0, anchorTop - overflow);
+            }
+
+            // Clear the region used by this and the previous render.
+            var clearRows = Math.Max(lastRenderRows, needed);
+            var width = Console.WindowWidth - 1;
+            for (int i = 0; i < clearRows; i++)
+            {
+                var row = anchorTop + i;
+                if (row >= 0 && row < Console.BufferHeight)
+                {
+                    Console.SetCursorPosition(0, row);
+                    Console.Write(new string(' ', width));
+                }
+            }
+
+            // Draw input lines (prompt on the first, aligned spaces on continuations).
+            for (int r = 0; r < lines.Count; r++)
+            {
+                Console.SetCursorPosition(0, anchorTop + r);
+                var pfx = r == 0 ? $"{AnsiHelper.Green}>{AnsiHelper.Reset} " : "  ";
+                Console.Write(pfx + lines[r]);
+            }
+
+            if (popupRows > 0) DrawPopup(matches!, selectedIndex, anchorTop + lines.Count);
+            lastRenderRows = needed;
+
+            var cr = Math.Min(anchorTop + editor.CursorRow, Console.BufferHeight - 1);
+            var cc = Math.Min(PromptWidth + editor.CursorCol, Console.WindowWidth - 1);
+            Console.SetCursorPosition(cc, cr);
+        }
+
+        void AcceptCompletion(string completion)
+        {
+            var line = editor.Lines[editor.CursorRow];
+            var tokenStart = FindTokenStart(line, editor.CursorCol, editor.CursorRow);
+            while (editor.CursorCol > tokenStart) editor.Backspace();
+            editor.Insert(completion);
+            popupVisible = false; matches = null; selectedIndex = -1;
+        }
+
+        Render();
+
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            var ctrl = key.Modifiers.HasFlag(ConsoleModifiers.Control);
+            var shiftOrAlt = key.Modifiers.HasFlag(ConsoleModifiers.Shift) || key.Modifiers.HasFlag(ConsoleModifiers.Alt);
+
+            switch (key.Key)
+            {
+                case ConsoleKey.Enter when popupVisible && matches != null && selectedIndex >= 0:
+                    AcceptCompletion(matches[selectedIndex].Text);
+                    Render();
+                    break;
+
+                case ConsoleKey.Enter when shiftOrAlt:   // Shift/Alt+Enter inserts a newline
+                    editor.Insert("\n");
+                    RefreshPopup();
+                    Render();
+                    break;
+
+                case ConsoleKey.Enter:                    // submit
+                    popupVisible = false;
+                    Render();
+                    Console.SetCursorPosition(0, Math.Min(anchorTop + editor.Lines.Count, Console.BufferHeight - 1));
+                    Console.WriteLine();
+                    var result = editor.Text;
+                    History.Add(result);
+                    return result;
+
+                case ConsoleKey.Tab when popupVisible && matches != null && matches.Length > 0:
+                    AcceptCompletion(matches[selectedIndex >= 0 ? selectedIndex : 0].Text);
+                    Render();
+                    break;
+
+                case ConsoleKey.UpArrow when popupVisible && matches != null:
+                    selectedIndex = Math.Max(0, selectedIndex - 1);
+                    Render();
+                    break;
+                case ConsoleKey.UpArrow:
+                    if (!editor.MoveUpLine())
+                    {
+                        var recalled = History.Up(editor.Text);
+                        if (recalled != null) editor.SetText(recalled);
+                    }
+                    RefreshPopup();
+                    Render();
+                    break;
+
+                case ConsoleKey.DownArrow when popupVisible && matches != null:
+                    selectedIndex = Math.Min(matches.Length - 1, selectedIndex + 1);
+                    Render();
+                    break;
+                case ConsoleKey.DownArrow:
+                    if (!editor.MoveDownLine())
+                    {
+                        var next = History.Down();
+                        if (next != null) editor.SetText(next);
+                    }
+                    RefreshPopup();
+                    Render();
+                    break;
+
+                case ConsoleKey.LeftArrow:  editor.MoveLeft(); RefreshPopup(); Render(); break;
+                case ConsoleKey.RightArrow: editor.MoveRight(); RefreshPopup(); Render(); break;
+                case ConsoleKey.Home:       editor.MoveLineStart(); RefreshPopup(); Render(); break;
+                case ConsoleKey.End:        editor.MoveLineEnd(); RefreshPopup(); Render(); break;
+
+                case ConsoleKey.Backspace:  editor.Backspace(); RefreshPopup(); Render(); break;
+                case ConsoleKey.Delete:     editor.DeleteForward(); RefreshPopup(); Render(); break;
+
+                case ConsoleKey.Escape:
+                    if (popupVisible) { popupVisible = false; matches = null; selectedIndex = -1; }
+                    else editor.Clear();
+                    Render();
+                    break;
+
+                case ConsoleKey.Z when ctrl: editor.Undo(); RefreshPopup(); Render(); break;
+                case ConsoleKey.Y when ctrl: editor.Redo(); RefreshPopup(); Render(); break;
+
+                case ConsoleKey.V when ctrl:
+                    var imgPath = ClipboardImageProvider?.Invoke();
+                    if (!string.IsNullOrEmpty(imgPath))
+                        editor.Insert($"@image \"{imgPath}\" ");
+                    else
+                    {
+                        var clip = ClipboardTextProvider?.Invoke();
+                        if (!string.IsNullOrEmpty(clip)) editor.Insert(clip);
+                    }
+                    RefreshPopup();
+                    Render();
+                    break;
+
+                default:
+                    if (!char.IsControl(key.KeyChar) && key.KeyChar != '\0')
+                    {
+                        editor.InsertChar(key.KeyChar);
+                        RefreshPopup();
+                        Render();
+                    }
+                    break;
+            }
+        }
     }
 
-    /// <summary>Find the / or @ token being typed at cursor position.</summary>
-    private static string? FindActiveToken(string text, int cursorPos)
+    /// <summary>Find the / or @ token being typed on the current line at the cursor.</summary>
+    private static string? FindActiveToken(string line, int col, int row)
     {
-        if (cursorPos == 0) return null;
-        var before = text[..cursorPos];
-
-        // Find the start of the current token (last @ or / that starts a token)
+        if (col == 0) return null;
+        var before = line[..Math.Min(col, line.Length)];
         for (int i = before.Length - 1; i >= 0; i--)
         {
             var ch = before[i];
-            if (ch == '@')
-                return before[i..];
-            if (ch == '/' && i == 0) // / only at start of line
-                return before;
-            if (ch == ' ' && i < before.Length - 1)
+            if (ch == '@') return before[i..];
+            if (ch == '/' && i == 0 && row == 0) return before;
+            if (ch == ' ')
             {
-                // Check if next char after space is @
-                if (before[i + 1] == '@')
-                    return before[(i + 1)..];
+                if (i + 1 < before.Length && before[i + 1] == '@') return before[(i + 1)..];
                 break;
             }
         }
         return null;
+    }
+
+    private static int FindTokenStart(string line, int col, int row)
+    {
+        var before = line[..Math.Min(col, line.Length)];
+        for (int i = before.Length - 1; i >= 0; i--)
+        {
+            if (before[i] == '@') return i;
+            if (before[i] == '/' && i == 0 && row == 0) return 0;
+            if (before[i] == ' ' && i + 1 < before.Length && before[i + 1] == '@') return i + 1;
+        }
+        return col;
     }
 
     private static CompletionItem[] GetMatches(string prefix)
@@ -285,49 +300,16 @@ public class InputReader
         return [];
     }
 
-    private static void AcceptCompletion(List<char> buffer, ref int cursorPos, string completion)
+    private static int PopupRowCount(int itemCount)
     {
-        var text = new string(buffer.ToArray());
-        var tokenStart = FindTokenStart(text, cursorPos);
-
-        // Remove old token
-        while (buffer.Count > tokenStart) buffer.RemoveAt(buffer.Count - 1);
-
-        // Insert completion
-        foreach (var c in completion) buffer.Add(c);
-        cursorPos = buffer.Count;
+        var visible = Math.Min(MaxPopupItems, itemCount);
+        var hasAbove = _scrollOffset > 0;
+        var hasBelow = _scrollOffset + visible < itemCount;
+        return visible + (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0);
     }
 
-    private static int FindTokenStart(string text, int cursorPos)
+    private static void DrawPopup(CompletionItem[] items, int selectedIndex, int top)
     {
-        var before = text[..Math.Min(cursorPos, text.Length)];
-        for (int i = before.Length - 1; i >= 0; i--)
-        {
-            if (before[i] == '@') return i;
-            if (before[i] == '/' && i == 0) return 0;
-            if (before[i] == ' ' && i < before.Length - 1 && before[i + 1] == '@')
-                return i + 1;
-        }
-        return cursorPos;
-    }
-
-    private static void ShowPopup(CompletionItem[] items, int selectedIndex, ref int popupLineCount)
-    {
-        var inputTop = Console.CursorTop;
-        var inputLeft = Console.CursorLeft;
-
-        // Clear old popup
-        for (int i = 1; i <= popupLineCount; i++)
-        {
-            var row = inputTop + i;
-            if (row < Console.BufferHeight)
-            {
-                Console.SetCursorPosition(0, row);
-                Console.Write(new string(' ', Console.WindowWidth - 1));
-            }
-        }
-
-        // Scroll the visible window so the selected item stays in view.
         if (selectedIndex >= 0)
         {
             if (selectedIndex < _scrollOffset) _scrollOffset = selectedIndex;
@@ -336,79 +318,33 @@ public class InputReader
         var maxOffset = Math.Max(0, items.Length - MaxPopupItems);
         _scrollOffset = Math.Clamp(_scrollOffset, 0, maxOffset);
 
-        var visibleCount = Math.Min(MaxPopupItems, items.Length - _scrollOffset);
+        var visible = Math.Min(MaxPopupItems, items.Length - _scrollOffset);
         var hasAbove = _scrollOffset > 0;
-        var hasBelow = _scrollOffset + visibleCount < items.Length;
-        popupLineCount = visibleCount + (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0);
-
-        // Ensure we have room below
-        while (inputTop + popupLineCount >= Console.BufferHeight)
-        {
-            Console.SetCursorPosition(0, Console.BufferHeight - 1);
-            Console.WriteLine();
-            inputTop--;
-        }
-
+        var hasBelow = _scrollOffset + visible < items.Length;
         var clearWidth = Console.WindowWidth - PromptWidth - 1;
         var line = 0;
 
-        void WriteRow(string content)
+        void Row(string content)
         {
-            Console.SetCursorPosition(PromptWidth, inputTop + 1 + line);
-            Console.Write(new string(' ', clearWidth));
-            Console.SetCursorPosition(PromptWidth, inputTop + 1 + line);
+            var r = top + line;
+            if (r >= Console.BufferHeight) { line++; return; }
+            Console.SetCursorPosition(PromptWidth, r);
+            Console.Write(new string(' ', Math.Max(0, clearWidth)));
+            Console.SetCursorPosition(PromptWidth, r);
             Console.Write(content);
             line++;
         }
 
-        if (hasAbove)
-            WriteRow($"  {AnsiHelper.Dim}↑ {_scrollOffset} more{AnsiHelper.Reset}");
-
-        for (int i = 0; i < visibleCount; i++)
+        if (hasAbove) Row($"{AnsiHelper.Dim}↑ {_scrollOffset} more{AnsiHelper.Reset}");
+        for (int i = 0; i < visible; i++)
         {
             var idx = _scrollOffset + i;
             var item = items[idx];
             if (idx == selectedIndex)
-                WriteRow($"{AnsiHelper.BgDarkGray}{AnsiHelper.Cyan}{AnsiHelper.Bold} {item.Text,-24}{AnsiHelper.Reset}{AnsiHelper.BgDarkGray}{AnsiHelper.Dim} {item.Description}{AnsiHelper.Reset}");
+                Row($"{AnsiHelper.BgDarkGray}{AnsiHelper.Cyan}{AnsiHelper.Bold} {item.Text,-24}{AnsiHelper.Reset}{AnsiHelper.BgDarkGray}{AnsiHelper.Dim} {item.Description}{AnsiHelper.Reset}");
             else
-                WriteRow($"  {AnsiHelper.Dim}{item.Text,-24}{item.Description}{AnsiHelper.Reset}");
+                Row($"  {AnsiHelper.Dim}{item.Text,-24}{item.Description}{AnsiHelper.Reset}");
         }
-
-        if (hasBelow)
-            WriteRow($"  {AnsiHelper.Dim}↓ {items.Length - (_scrollOffset + visibleCount)} more (press ↓){AnsiHelper.Reset}");
-
-        // Restore cursor
-        Console.SetCursorPosition(inputLeft, inputTop);
-    }
-
-    private static void ClearPopup(ref int popupLineCount)
-    {
-        if (popupLineCount == 0) return;
-
-        var inputTop = Console.CursorTop;
-        var inputLeft = Console.CursorLeft;
-
-        for (int i = 1; i <= popupLineCount; i++)
-        {
-            var row = inputTop + i;
-            if (row < Console.BufferHeight)
-            {
-                Console.SetCursorPosition(0, row);
-                Console.Write(new string(' ', Console.WindowWidth - 1));
-            }
-        }
-
-        popupLineCount = 0;
-        Console.SetCursorPosition(inputLeft, inputTop);
-    }
-
-    private static void RedrawLine(List<char> buffer, int cursorPos)
-    {
-        Console.SetCursorPosition(PromptWidth, Console.CursorTop);
-        var text = new string(buffer.ToArray());
-        Console.Write(text);
-        var clearLen = Console.WindowWidth - PromptWidth - text.Length - 1;
-        if (clearLen > 0) Console.Write(new string(' ', clearLen));
-        Console.SetCursorPosition(PromptWidth + cursorPos, Console.CursorTop);
+        if (hasBelow) Row($"{AnsiHelper.Dim}↓ {items.Length - (_scrollOffset + visible)} more (press ↓){AnsiHelper.Reset}");
     }
 }

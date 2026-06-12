@@ -81,6 +81,10 @@ public class Program
         var userDataFolder = Path.Combine(ConfigLoader.AppDataPath, "WebView2Data");
         var browser = new BrowserBridge(selectors, userDataFolder);
 
+        // Clipboard paste (Ctrl+V) — marshaled to the browser's STA thread.
+        InputReader.ClipboardTextProvider = () => browser.GetClipboardText();
+        InputReader.ClipboardImageProvider = () => browser.SaveClipboardImage();
+
         Console.WriteLine("Opening Gemini browser...");
         await browser.StartAsync();
 

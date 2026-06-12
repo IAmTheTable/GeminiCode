@@ -40,6 +40,14 @@ public class ContextProcessor
         @"@upload\s+(\S+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // @image path/to/img.png  or  @image "C:\with spaces\img.png"  (uploads an image to Gemini)
+    private static readonly Regex ImagePattern = new(
+        @"@image\s+(?:""([^""]+)""|(\S+))",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp" };
+
     // @tree [path] [depth=N]
     private static readonly Regex TreePattern = new(
         @"@tree(?:\s+(\S+))?(?:\s+depth=(\d+))?",
@@ -152,6 +160,23 @@ public class ContextProcessor
             return "";
         });
 
+        // Process @image references (allows absolute paths — pasted/temp images live outside the sandbox)
+        processed = ImagePattern.Replace(processed, m =>
+        {
+            var path = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            var resolved = ResolveImagePath(path);
+            if (resolved != null)
+            {
+                PendingUploads.Add(resolved);
+                contexts.Add(($"@image {Path.GetFileName(resolved)}", $"[Image queued for upload: {Path.GetFileName(resolved)}]"));
+            }
+            else
+            {
+                contexts.Add(($"@image {path}", $"[Image not found or unsupported: {path}]"));
+            }
+            return "";
+        });
+
         // Process @tree
         processed = TreePattern.Replace(processed, m =>
         {
@@ -257,6 +282,7 @@ public class ContextProcessor
               @file <path> L200      — Attach from line 200 onwards as text
               @file <path>:10-50     — Attach line range (legacy syntax)
               @upload <path>         — Upload file to Gemini (explicit)
+              @image <path>          — Upload an image to Gemini (also Ctrl+V an image)
               @tree [path] [depth=N] — Attach directory tree
               @git <status|diff|log|blame|branch> [args] — Attach git info
               @diff [args]           — Shorthand for @git diff
@@ -264,6 +290,17 @@ public class ContextProcessor
               @find <glob-pattern>   — Attach file listing
               @codebase              — Attach project overview
             """;
+    }
+
+    /// <summary>Resolve an image path for upload. Allows absolute paths (clipboard/temp images live
+    /// outside the working dir) but only for existing files with a known image extension.</summary>
+    private string? ResolveImagePath(string path)
+    {
+        string candidate;
+        try { candidate = Path.IsPathRooted(path) ? Path.GetFullPath(path) : _sandbox.Resolve(path); }
+        catch (SandboxViolationException) { candidate = Path.GetFullPath(path); }
+        catch { return null; }
+        return File.Exists(candidate) && ImageExtensions.Contains(Path.GetExtension(candidate)) ? candidate : null;
     }
 
     private string? ExpandFile(string path, string startLine, string endLine)

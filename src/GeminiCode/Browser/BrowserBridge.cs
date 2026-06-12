@@ -720,6 +720,37 @@ public class BrowserBridge : IDisposable
         });
     }
 
+    /// <summary>Get clipboard text (marshaled to the WinForms STA thread). Null if the clipboard has no text.</summary>
+    public string? GetClipboardText()
+    {
+        try
+        {
+            return _window?.Invoke(() =>
+                System.Windows.Forms.Clipboard.ContainsText() ? System.Windows.Forms.Clipboard.GetText() : null);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>If the clipboard holds an image, save it to a temp PNG and return its path. Null otherwise.</summary>
+    public string? SaveClipboardImage()
+    {
+        try
+        {
+            return _window?.Invoke(() =>
+            {
+                if (!System.Windows.Forms.Clipboard.ContainsImage()) return (string?)null;
+                using var img = System.Windows.Forms.Clipboard.GetImage();
+                if (img == null) return null;
+                var dir = Path.Combine(Path.GetTempPath(), "GeminiCodePaste");
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, $"paste_{Guid.NewGuid():N}.png");
+                img.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                return path;
+            });
+        }
+        catch { return null; }
+    }
+
     private Task<string> InvokeOnStaAsync(Func<Task<string>> action)
     {
         var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
