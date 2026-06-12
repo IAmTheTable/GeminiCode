@@ -20,6 +20,7 @@ public class AgentOrchestrator
     private readonly AgentProfile _profile;
     private readonly SessionContext _sessionContext;
     private readonly PluginRegistry _plugins;
+    private readonly UsageTracker _usage;
     private const int MaxRetries = 2;
 
     /// <summary>Raised when a file is saved (so CLI can track it for "run it" commands).</summary>
@@ -34,7 +35,8 @@ public class AgentOrchestrator
         Tools.PathSandbox sandbox,
         AgentProfile profile,
         SessionContext sessionContext,
-        PluginRegistry pluginRegistry)
+        PluginRegistry pluginRegistry,
+        UsageTracker usage)
     {
         _browser = browser;
         _tools = tools;
@@ -45,6 +47,7 @@ public class AgentOrchestrator
         _profile = profile;
         _sessionContext = sessionContext;
         _plugins = pluginRegistry;
+        _usage = usage;
     }
 
     /// <summary>Sends the system prompt as a separate initialization message and waits for acknowledgment.</summary>
@@ -106,6 +109,7 @@ public class AgentOrchestrator
         await DetectModelChangeAsync("pre-send");
 
         var message = _conversation.PrepareMessage(userMessage);
+        _usage.RecordSent(message);
 
         // Capture baseline BEFORE sending so we can detect only NEW content
         var baseline = await _browser.CaptureBaselineAsync();
@@ -136,6 +140,8 @@ public class AgentOrchestrator
             return null;
         }
 
+        _usage.RecordReceived(response.Text);
+
         // Check model after response — Gemini may have switched mid-conversation
         var modelChanged = await DetectModelChangeAsync("post-response");
 
@@ -145,6 +151,7 @@ public class AgentOrchestrator
         if (modelChanged)
             await ReorientAfterModelSwitchAsync(ct);
 
+        Console.WriteLine($"{AnsiHelper.Dim}{_usage.Footer()}{AnsiHelper.Reset}");
         return result;
     }
 
@@ -477,6 +484,7 @@ public class AgentOrchestrator
         // Send results back to Gemini
         Console.WriteLine($"\n  {AnsiHelper.Dim}Sending results to Gemini...{AnsiHelper.Reset}");
         var combinedResults = _conversation.PrepareToolResults(results);
+        _usage.RecordSent(combinedResults);
         var followBaseline = await _browser.CaptureBaselineAsync();
         await _browser.SendMessageAsync(combinedResults);
 
@@ -497,6 +505,8 @@ public class AgentOrchestrator
             HandleLimitDetected(followUp.Limit);
             return null;
         }
+
+        _usage.RecordReceived(followUp.Text);
 
         return await ProcessResponseAsync(followUp, ct);
     }

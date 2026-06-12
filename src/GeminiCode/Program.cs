@@ -138,12 +138,13 @@ public class Program
         // Initialize agent
         var conversation = new ConversationManager();
         var sessionContext = new SessionContext(workDir, agentProfile.ActiveProfileName);
-        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext, pluginRegistry);
+        var usage = new UsageTracker();
+        var orchestrator = new AgentOrchestrator(browser, toolRegistry, permissionGate, conversation, settings, sandbox, agentProfile, sessionContext, pluginRegistry, usage);
 
         // Initialize workflow runner, context processor, and CLI
         var workflowRunner = new WorkflowRunner(orchestrator, browser);
         var contextProcessor = new ContextProcessor(sandbox);
-        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext, workflowRunner, pluginRegistry, toolRegistry);
+        var commands = new CommandHandler(browser, conversation, allowlist, sandbox, agentProfile, sessionContext, workflowRunner, pluginRegistry, toolRegistry, usage);
         var cli = new CliEngine(orchestrator, commands, browser, toolRegistry, permissionGate, contextProcessor);
 
         // Wire file-save notifications so "run it" works

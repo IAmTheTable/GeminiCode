@@ -18,6 +18,7 @@ public class CommandHandler
     private readonly WorkflowRunner _workflowRunner;
     private readonly PluginRegistry _plugins;
     private readonly ToolRegistry _toolRegistry;
+    private readonly UsageTracker _usage;
 
     public CommandHandler(
         BrowserBridge browser,
@@ -28,7 +29,8 @@ public class CommandHandler
         SessionContext sessionContext,
         WorkflowRunner workflowRunner,
         PluginRegistry plugins,
-        ToolRegistry toolRegistry)
+        ToolRegistry toolRegistry,
+        UsageTracker usage)
     {
         _browser = browser;
         _conversation = conversation;
@@ -39,6 +41,7 @@ public class CommandHandler
         _workflowRunner = workflowRunner;
         _plugins = plugins;
         _toolRegistry = toolRegistry;
+        _usage = usage;
     }
 
     /// <summary>Returns true if the input was a command (handled), false if it's a regular message.</summary>
@@ -117,6 +120,9 @@ public class CommandHandler
             case "/compact":
                 await HandleCompactAsync();
                 return true;
+            case "/usage":
+                Console.WriteLine(_usage.Breakdown());
+                return true;
             default:
                 if (await TryRunPluginAsync(command, arg, ct))
                     return true;
@@ -150,6 +156,7 @@ public class CommandHandler
               /tools           — List available tools and risk
               /init            — Create a starter GEMINI.md
               /compact         — Summarize context and start fresh
+              /usage           — Show estimated token usage breakdown
 
             {AnsiHelper.Bold}@Context References:{AnsiHelper.Reset} (attach files/data to your message)
             {Agent.ContextProcessor.GetHelpText()}
