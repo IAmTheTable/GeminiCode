@@ -112,6 +112,11 @@ public static class ToolCallParser
         @"\[\s*DELETE\s*\](.*?)\[\s*/\s*DELETE\s*\]",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // [GLOB]**/*.cs[/GLOB]
+    private static readonly Regex GlobTagPattern = new(
+        @"\[\s*GLOB\s*\](.*?)\[\s*/\s*GLOB\s*\]",
+        RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ParseResult Parse(string responseText)
     {
         var toolCalls = new List<ParsedToolCall>();
@@ -246,6 +251,8 @@ public static class ToolCallParser
         { toolCalls.Add(MakeToolCall("MakeDir", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
         textContent = DeleteTagPattern.Replace(textContent, m =>
         { toolCalls.Add(MakeToolCall("DeleteFile", new() { ["path"] = m.Groups[1].Value.Trim() })); return ""; });
+        textContent = GlobTagPattern.Replace(textContent, m =>
+        { toolCalls.Add(MakeToolCall("Glob", new() { ["pattern"] = m.Groups[1].Value.Trim() })); return ""; });
 
         // Strategy 2: XML <tool_call> format
         if (toolCalls.Count == 0)

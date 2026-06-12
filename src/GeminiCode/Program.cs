@@ -66,6 +66,7 @@ public class Program
         toolRegistry.Register(new MoveFileTool(sandbox));
         toolRegistry.Register(new MakeDirTool(sandbox));
         toolRegistry.Register(new DeleteFileTool(sandbox));
+        toolRegistry.Register(new GlobTool(sandbox));
 
         // Initialize permissions
         var allowlist = new SessionAllowlist();

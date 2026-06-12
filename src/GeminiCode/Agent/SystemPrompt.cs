@@ -93,6 +93,7 @@ the replacement text
 [MOVE src/a.txt>>>src/b.txt]            (move/rename)
 [MKDIR]src/newdir[/MKDIR]               (create directory)
 [DELETE]src/old.txt[/DELETE]            (delete — moved to .gemini/trash, recoverable)
+[GLOB]**/*.cs[/GLOB]                    (find files by glob pattern)
 ```
 
 ## Rules — READ CAREFULLY
