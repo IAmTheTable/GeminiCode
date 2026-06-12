@@ -17,7 +17,7 @@ public class DomSelectorConfig
     public string SendButton { get; set; } = "button[aria-label='Send message']";
 
     [JsonPropertyName("responseContainer")]
-    public string ResponseContainer { get; set; } = ".message-container";
+    public string ResponseContainer { get; set; } = ".response-container";
 
     [JsonPropertyName("typingIndicator")]
     public string TypingIndicator { get; set; } = ".loading-indicator";
