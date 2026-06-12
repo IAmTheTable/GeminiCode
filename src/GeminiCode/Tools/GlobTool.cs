@@ -43,6 +43,7 @@ public class GlobTool : ITool
             return Task.FromResult(new ToolResult(Name, true, sb.ToString().TrimEnd()));
         }
         catch (SandboxViolationException ex) { return Task.FromResult(new ToolResult(Name, false, ex.Message)); }
+        catch (Exception ex) { return Task.FromResult(new ToolResult(Name, false, ex.Message)); }
     }
 
     public string DescribeAction(Dictionary<string, JsonElement> p) => $"Glob: {p["pattern"].GetString()}";
