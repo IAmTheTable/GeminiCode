@@ -676,6 +676,18 @@ public class BrowserBridge : IDisposable
         return null;
     }
 
+    /// <summary>Gather signals and classify why a send failed. Browser-bound; logic lives in FailureClassifier.</summary>
+    public async Task<FailureDiagnosis> DiagnoseFailureAsync()
+    {
+        LimitInfo? limit = null;
+        bool authed = true;
+        Dictionary<string, bool> health = new();
+        try { limit = await CheckForLimitAsync(); } catch { }
+        try { authed = await CheckAuthenticatedAsync(); } catch { authed = false; }
+        try { health = await RunHealthCheckAsync(); } catch { }
+        return FailureClassifier.Classify(authed, health, limit);
+    }
+
     public async Task StartNewChatAsync()
     {
         var script = $$"""
