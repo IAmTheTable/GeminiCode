@@ -41,6 +41,20 @@ public class BrowserWindow : Form
         var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
             browserExecutableFolder: null, userDataFolder: userDataFolder, options: options);
         await WebView.EnsureCoreWebView2Async(env);
+
+        // Google refuses sign-in from embedded browsers (the default WebView2 UA carries an
+        // "Edg/" token and trips its "secure browser" check). On Workspace/managed accounts the
+        // refusal is shown as a misleading "your domain provider disabled the app" message even
+        // though nothing is actually disabled. Present a clean desktop-Chrome UA so the login page
+        // treats us like a normal browser. Override with GEMINICODE_USER_AGENT if it goes stale.
+        var userAgent = Environment.GetEnvironmentVariable("GEMINICODE_USER_AGENT");
+        if (string.IsNullOrWhiteSpace(userAgent))
+        {
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+        }
+        WebView.CoreWebView2.Settings.UserAgent = userAgent;
+
         _initTcs.TrySetResult();
     }
 
